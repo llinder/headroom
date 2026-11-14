@@ -236,7 +236,7 @@ public struct ReportModel: Sendable {
         ]
         if from < now.addingTimeInterval(-rawRetention) {
             notes.append(
-                "Workload figures and the recorder's own use cover at most the last 30 days, because detailed samples are kept for 30 days.")
+                "Workload figures, drive writes and the recorder's own use cover only the last 30 days of the range, because detailed samples are kept for 30 days.")
         }
 
         return Appendix(

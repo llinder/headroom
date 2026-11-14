@@ -18,6 +18,7 @@ final class Recorder {
 
     private let log = Logger(subsystem: "io.github.llinder.headroom", category: "recorder")
     private let store: SampleStore
+    private let machineId: String
     private let spool: Spool
     private let readMeta: Statement
     private let writeMeta: Statement
@@ -55,6 +56,7 @@ final class Recorder {
         let (rules, rulesWarning) = GroupRules.load(from: paths.groups)
         if let rulesWarning { log.warning("group rules: \(rulesWarning)") }
 
+        machineId = machine.machineId
         store = try SampleStore(db: db, machineId: machine.machineId, interval: Self.interval)
         spool = Spool(url: paths.spool)
         liveState = try LiveStateWriter(url: paths.liveState)
@@ -93,6 +95,11 @@ final class Recorder {
             log.notice("recorder was absent for \(Int(gap.duration)) s while the machine was awake")
         }
         store.recordEvent(kind: "recorder_start", ts: now, payload: [:])
+        do {
+            try store.closeOrphanRuns(machineId: machineId, fallbackEnd: heartbeat ?? now)
+        } catch {
+            log.error("closing orphaned agent runs failed: \(String(describing: error), privacy: .public)")
+        }
         // Reports written while the recorder was down are still picked up; a first run starts from now.
         nextScanSince = Date(timeIntervalSince1970: heartbeat ?? now)
         coverageFrom = heartbeat ?? now

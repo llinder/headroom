@@ -328,6 +328,21 @@ public final class SampleStore {
         }
     }
 
+    /// Ends runs left open by a crash or reboot, at their last usage minute or else `fallbackEnd`. Called before
+    /// sampling starts: the tracker begins empty and re-creates every run still alive, so any run open now is
+    /// one nothing will ever end.
+    public func closeOrphanRuns(machineId: String, fallbackEnd: Double) throws {
+        let stmt = try db.prepare(
+            """
+            UPDATE agent_runs
+            SET ended = COALESCE((SELECT MAX(ts) + 60 FROM run_usage WHERE run_id = agent_runs.run_id), ?)
+            WHERE machine_id = ? AND ended IS NULL
+            """)
+        stmt.bind(1, Self.seconds(fallbackEnd))
+        stmt.bind(2, machineId)
+        _ = try stmt.step()
+    }
+
     public func applyRetention(now: Double, days: Int = 30) throws {
         let cutoff = Int64(now.rounded(.down)) - Int64(days) * 86_400
         try db.transaction {

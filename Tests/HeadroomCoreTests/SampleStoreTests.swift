@@ -303,6 +303,22 @@ private func run(_ pid: Int32, cpu: Double, footprint: UInt64, write: UInt64 = 0
         #expect(try object(events[2][2])["reason"] as? String == "lid")
     }
 
+    @Test func closeOrphanRunsEndsOpenRunsOnly() throws {
+        let f = try Fixture()
+        try f.db.exec("""
+            INSERT INTO agent_runs(run_id, machine_id, tool, root_pid, root_start, started, ended) VALUES
+                (1, '\(machine)', 'claude', 1, 1, 1000, NULL),
+                (2, '\(machine)', 'claude', 2, 1, 1000, NULL),
+                (3, '\(machine)', 'claude', 3, 1, 1000, 1500),
+                (4, 'other', 'claude', 4, 1, 1000, NULL);
+            INSERT INTO run_usage VALUES(1, 1200, 1, 0, 0, 0), (1, 1260, 1, 0, 0, 0);
+            """)
+        try f.store.closeOrphanRuns(machineId: machine, fallbackEnd: 5000.7)
+        let ended = try f.rows("SELECT run_id, COALESCE(ended, 'open') FROM agent_runs ORDER BY run_id", columns: 2)
+        // Last usage minute plus 60 s; no usage falls back; already ended and other machines are untouched.
+        #expect(ended == [["1", "1320"], ["2", "5000"], ["3", "1500"], ["4", "open"]])
+    }
+
     @Test func retentionDeletesOnlyRawTables() throws {
         let f = try Fixture()
         let old = base - 31 * 86_400

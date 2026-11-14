@@ -214,14 +214,26 @@ private func fullText(_ doc: PDFDocument) -> String {
         #expect(appendix.contains("Drive writes were recorded on 6 days; a yearly projection needs at least 7."))
     }
 
-    @Test func agentRunsCountedWhileActive() throws {
+    @Test func agentRunsCountedByUsageInRange() throws {
         let f = try ReportFixture(secondMachine: false)
         let id = thisMachine.machineId
-        // Started before the range and still running: counted. Ended before the range: not.
+        // Started before the range with usage inside it: counted.
         try f.exec("INSERT INTO agent_runs(machine_id, tool, root_pid, root_start, started) VALUES('\(id)', 'codex', 7, 1, \(rangeStart - 86_400))")
-        try f.exec(
-            "INSERT INTO agent_runs(machine_id, tool, root_pid, root_start, started, ended) VALUES('\(id)', 'codex', 8, 1, \(rangeStart - 86_400), \(rangeStart - 60))")
-        #expect(try f.model(baseline: nil).appendix.agentRunCount == 2)
+        try f.exec("INSERT INTO run_usage VALUES(last_insert_rowid(), \(at(0, 1)), 600, 0, 0, 0)")
+        // Left open by a crash, with usage only before the range: not counted, however long ago it started.
+        try f.exec("INSERT INTO agent_runs(machine_id, tool, root_pid, root_start, started) VALUES('\(id)', 'codex', 8, 1, \(rangeStart - 86_400))")
+        try f.exec("INSERT INTO run_usage VALUES(last_insert_rowid(), \(rangeStart - 3600), 600, 0, 0, 0)")
+        let a = try f.model(baseline: nil).appendix
+        #expect(a.agentRunCount == 2)
+        #expect(abs(a.agentCPUHours - (3600 + 600) / 3600) < 1e-9)
+    }
+
+    @Test func retentionNoteNamesDriveWrites() throws {
+        let f = try ReportFixture(secondMachine: false)
+        let notes = try f.model(baseline: nil, from: rangeStart - 10 * 86_400).appendix.notes
+        #expect(notes.contains {
+            $0.hasPrefix("Workload figures, drive writes and the recorder's own use cover only the last 30 days of the range")
+        })
     }
 
     @Test func thresholdsPluralize() throws {

@@ -85,10 +85,14 @@ public struct Queries {
         }.compactMap { $0 }
     }
 
-    /// Runs active at any point in the range, and the CPU seconds they used inside it, so both describe one set.
+    /// Runs with usage recorded in the range, and the CPU seconds of that usage, so both describe one set. A run
+    /// left open by a crash has no later usage, so it can't inflate ranges after it.
     public func agentRunTotals(machineId: String, from: Date, to: Date) throws(DatabaseError) -> (runs: Int, cpuSeconds: Double) {
         let runs = try rows(
-            "SELECT COUNT(*) FROM agent_runs WHERE machine_id=? AND (ended IS NULL OR ended>=?) AND started<?"
+            """
+            SELECT COUNT(DISTINCT r.run_id) FROM agent_runs r WHERE r.machine_id=?
+            AND EXISTS (SELECT 1 FROM run_usage u WHERE u.run_id = r.run_id AND u.ts>=? AND u.ts<?)
+            """
         ) { s in bindRange(s, machineId, from, to) } read: { Int($0.int64(0)) }.first ?? 0
         let cpu = try rows(
             """
