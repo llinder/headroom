@@ -23,7 +23,7 @@ private func commands(_ data: Data) throws -> [String] {
 
 @Suite struct HookConfigTests {
     @Test func plistKeys() throws {
-        let data = LaunchAgent.plist(binary: "/opt/headroomd")
+        let data = try LaunchAgent.plist(binary: "/opt/headroomd")
         let plist = try #require(try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
         #expect(plist["Label"] as? String == "io.github.llinder.headroom")
         #expect(plist["ProgramArguments"] as? [String] == ["/opt/headroomd"])
@@ -106,6 +106,9 @@ private final class Home {
 
     deinit { try? FileManager.default.removeItem(at: dir) }
 
+    var bootstrapResults: [Int32] = []
+    var sleeps: [TimeInterval] = []
+
     func install(agents: Bool, bootstrapStatus: Int32 = 0) -> (Int32, [String], [String]) {
         var out: [String] = []
         var err: [String] = []
@@ -113,8 +116,10 @@ private final class Home {
             agents: agents, home: home, sourceDir: source, uid: 501, now: Date(timeIntervalSince1970: 1_800_000_000),
             launchctl: { args in
                 self.launchctlCalls.append(args)
-                return args.first == "bootstrap" ? bootstrapStatus : 0
+                guard args.first == "bootstrap" else { return 0 }
+                return self.bootstrapResults.isEmpty ? bootstrapStatus : self.bootstrapResults.removeFirst()
             },
+            sleep: { self.sleeps.append($0) },
             out: { out.append($0) }, err: { err.append($0) })
         return (code, out, err)
     }
@@ -206,5 +211,82 @@ private final class Home {
         #expect(!fm.fileExists(atPath: h.home.appending(path: "Library/LaunchAgents/io.github.llinder.headroom.plist").path))
         #expect(try commands(Data(contentsOf: settings)) == ["bash herdr-agent-state.sh session"])
         #expect(out.contains { $0.contains("data") && $0.contains("kept") })
+    }
+
+    @Test func bootstrapRetriesAfterTransientFailure() throws {
+        let h = try Home()
+        h.bootstrapResults = [5, 0]
+        let (code, _, _) = h.install(agents: false)
+        #expect(code == 0)
+        #expect(h.launchctlCalls.filter { $0.first == "bootstrap" }.count == 2)
+        #expect(h.sleeps == [0.2])
+    }
+
+    @Test func bootstrapGivesUpAfterFiveAttempts() throws {
+        let h = try Home()
+        let (code, _, _) = h.install(agents: false, bootstrapStatus: 5)
+        #expect(code == 1)
+        #expect(h.launchctlCalls.filter { $0.first == "bootstrap" }.count == 5)
+    }
+
+    @Test func unreadableFileIsLeftAlone() throws {
+        let h = try Home()
+        let settings = h.home.appending(path: ".claude/settings.json")
+        try Data(existing.utf8).write(to: settings)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: settings.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: settings.path) }
+        let (_, _, err) = h.install(agents: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: settings.path)
+        #expect(try Data(contentsOf: settings) == Data(existing.utf8))
+        #expect(err.contains { $0.contains("settings.json") && $0.contains("unreadable") })
+        let names = try FileManager.default.contentsOfDirectory(atPath: h.home.appending(path: ".claude").path)
+        #expect(names == ["settings.json"])
+    }
+
+    @Test func symlinkedConfigStaysASymlink() throws {
+        let h = try Home()
+        let elsewhere = h.dir.appending(path: "dotfiles")
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        let target = elsewhere.appending(path: "settings.json")
+        try Data(existing.utf8).write(to: target)
+        let link = h.home.appending(path: ".claude/settings.json")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        _ = h.install(agents: true)
+        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) != nil)
+        #expect(try commands(Data(contentsOf: target)).contains { $0.contains("headroom agent-hook claude") })
+        _ = h.uninstall()
+        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) != nil)
+        #expect(try commands(Data(contentsOf: target)) == ["bash herdr-agent-state.sh session"])
+    }
+
+    @Test func existingBackupIsNotClobberedAndKeepsMode() throws {
+        let h = try Home()
+        let settings = h.home.appending(path: ".claude/settings.json")
+        try Data(existing.utf8).write(to: settings)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: settings.path)
+        let taken = h.home.appending(path: ".claude/settings.json.headroom-backup-1800000000")
+        try Data("older".utf8).write(to: taken)
+        _ = h.install(agents: true)
+        #expect(try Data(contentsOf: taken) == Data("older".utf8))
+        let next = h.home.appending(path: ".claude/settings.json.headroom-backup-1800000000-1")
+        #expect(try Data(contentsOf: next) == Data(existing.utf8))
+        let mode = try FileManager.default.attributesOfItem(atPath: next.path)[.posixPermissions] as? NSNumber
+        #expect(mode?.intValue == 0o600)
+    }
+
+    @Test func missingSourceBinaryInstallsNothing() throws {
+        let h = try Home()
+        try FileManager.default.removeItem(at: h.source.appending(path: "headroomd"))
+        let (code, _, err) = h.install(agents: false)
+        #expect(code == 1)
+        #expect(!err.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: h.home.appending(path: ".local/bin/headroom").path))
+        #expect(h.launchctlCalls.isEmpty)
+    }
+
+    @Test func uninstallOnEmptyHomeSucceeds() throws {
+        let h = try Home()
+        let (code, _) = h.uninstall()
+        #expect(code == 0)
     }
 }

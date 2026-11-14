@@ -4,7 +4,7 @@ enum LaunchAgent {
     static let label = "io.github.llinder.headroom"
 
     // The recorder logs through os.Logger, so launchd's stdout/stderr files would only collect nothing.
-    static func plist(binary: String) -> Data {
+    static func plist(binary: String) throws -> Data {
         let dict: [String: Any] = [
             "Label": label,
             "ProgramArguments": [binary],
@@ -15,8 +15,7 @@ enum LaunchAgent {
             "StandardOutPath": "/dev/null",
             "StandardErrorPath": "/dev/null",
         ]
-        // A literal dictionary of plist types always serializes.
-        return (try? PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)) ?? Data()
+        return try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
     }
 }
 
@@ -103,6 +102,7 @@ enum HookConfig {
 
 enum Install {
     private static let binaries = ["headroom", "headroomd"]
+    private static let bootstrapAttempts = 5
 
     static func launchctl(_ arguments: [String]) -> Int32 {
         let process = Process()
@@ -125,11 +125,16 @@ enum Install {
 
     static func run(
         agents: Bool, home: URL, sourceDir: URL, uid: UInt32, now: Date, launchctl: ([String]) -> Int32,
+        sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
         out: (String) -> Void, err: (String) -> Void
     ) -> Int32 {
         let fm = FileManager.default
         let bin = home.appending(path: ".local/bin")
         do {
+            for name in binaries where !fm.isReadableFile(atPath: sourceDir.appending(path: name).path) {
+                err("install failed: \(sourceDir.appending(path: name).path) not found")
+                return 1
+            }
             try fm.createDirectory(at: bin, withIntermediateDirectories: true)
             for name in binaries {
                 try replace(bin.appending(path: name), withCopyOf: sourceDir.appending(path: name))
@@ -139,7 +144,12 @@ enum Install {
             try LaunchAgent.plist(binary: bin.appending(path: "headroomd").path).write(to: plist, options: .atomic)
 
             _ = launchctl(["bootout", "gui/\(uid)/\(LaunchAgent.label)"])
-            let status = launchctl(["bootstrap", "gui/\(uid)", plist.path])
+            // Bootstrapping right after bootout of a live job often fails with I/O error 5 until launchd finishes teardown.
+            var status = launchctl(["bootstrap", "gui/\(uid)", plist.path])
+            for _ in 1..<bootstrapAttempts where status != 0 {
+                sleep(0.2)
+                status = launchctl(["bootstrap", "gui/\(uid)", plist.path])
+            }
             guard status == 0 else {
                 err("launchctl bootstrap failed with status \(status)")
                 return 1
@@ -180,35 +190,61 @@ enum Install {
             }
         }
         for (file, _) in hookFiles(home: home) where fm.fileExists(atPath: file.path) {
-            guard let existing = try? Data(contentsOf: file), HookConfig.contains(existing) else { continue }
-            update(file, now: now, out: out, err: err) { try HookConfig.removed($0 ?? existing) }
+            update(file, now: now, out: out, err: err) { data in
+                guard let data, HookConfig.contains(data) else { return data ?? Data() }
+                return try HookConfig.removed(data)
+            }
         }
         out("uninstalled \(LaunchAgent.label)")
         out("data kept at \(dataDirectory.path)")
         return 0
     }
 
-    /// Backs up the original and writes only when the content changes; an unparseable file is reported and left alone.
+    /// Backs up the original and writes only when the content changes. Only a missing file counts as empty: an
+    /// unreadable or unparseable one is reported and left alone. Symlinks are resolved so the link survives the write.
     private static func update(
-        _ file: URL, now: Date, out: (String) -> Void, err: (String) -> Void, transform: (Data?) throws -> Data
+        _ original: URL, now: Date, out: (String) -> Void, err: (String) -> Void, transform: (Data?) throws -> Data
     ) {
-        let existing = try? Data(contentsOf: file)
+        let file = original.resolvingSymlinksInPath()
+        let fm = FileManager.default
+        var existing: Data?
+        if fm.fileExists(atPath: file.path) {
+            guard let data = try? Data(contentsOf: file) else {
+                err("\(original.path): unreadable, left unchanged")
+                return
+            }
+            existing = data
+        }
         do {
             let updated = try transform(existing)
             if let existing {
+                if updated == existing { return }
                 let old = try JSONSerialization.jsonObject(with: existing) as? NSDictionary
                 let new = try JSONSerialization.jsonObject(with: updated) as? NSDictionary
                 if old == new { return }
-                let backup = file.deletingLastPathComponent().appending(
-                    path: "\(file.lastPathComponent).headroom-backup-\(Int(now.timeIntervalSince1970))")
-                try existing.write(to: backup)
+                try backup(file, contents: existing, now: now)
             }
             try updated.write(to: file, options: .atomic)
-            out("updated \(file.path)")
+            out("updated \(original.path)")
         } catch let error as HookConfigError {
-            err("\(file.path): \(error.message); left unchanged")
+            err("\(original.path): \(error.message); left unchanged")
         } catch {
-            err("\(file.path): \(error.localizedDescription); left unchanged")
+            err("\(original.path): \(error.localizedDescription); left unchanged")
+        }
+    }
+
+    private static func backup(_ file: URL, contents: Data, now: Date) throws {
+        let fm = FileManager.default
+        let base = "\(file.lastPathComponent).headroom-backup-\(Int(now.timeIntervalSince1970))"
+        var target = file.deletingLastPathComponent().appending(path: base)
+        var suffix = 0
+        while fm.fileExists(atPath: target.path) {
+            suffix += 1
+            target = file.deletingLastPathComponent().appending(path: "\(base)-\(suffix)")
+        }
+        try contents.write(to: target)
+        if let mode = try fm.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber {
+            try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: target.path)
         }
     }
 
@@ -216,11 +252,14 @@ enum Install {
     private static func replace(_ destination: URL, withCopyOf source: URL) throws {
         let temp = destination.deletingLastPathComponent().appending(
             path: ".\(destination.lastPathComponent).tmp-\(UUID().uuidString)")
-        try FileManager.default.copyItem(at: source, to: temp)
-        guard rename(temp.path, destination.path) == 0 else {
-            let code = errno
+        do {
+            try FileManager.default.copyItem(at: source, to: temp)
+            guard rename(temp.path, destination.path) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        } catch {
             try? FileManager.default.removeItem(at: temp)
-            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+            throw error
         }
     }
 }
