@@ -57,4 +57,39 @@ private func evaluate(
         #expect(LimitEvaluator.isDiskTight(free: 60 * gb, capacity: 2000 * gb, config: config))
         #expect(!LimitEvaluator.isDiskTight(free: 300 * gb, capacity: 2000 * gb, config: config))
     }
+
+    @Test func swapExactlyAtFractionIsNotHeavy() {
+        #expect(evaluate(memory: memory(swapUsed: 4 * gb, swapins: 1)).isEmpty)
+    }
+
+    @Test func idleExactlyAtBoundaryIsCPUSaturated() {
+        #expect(1 - 0.1 >= LimitConfig().cpuSaturatedFraction)
+        #expect(evaluate(cpu: cpu(idle: 0.1)) == [.cpuSaturated])
+    }
+
+    @Test func loadExactlyAtTwiceCoresIsCPUSaturated() {
+        #expect(evaluate(cpu: cpu(load1: 16.0)) == [.cpuSaturated])
+    }
+
+    @Test func criticalPressureIsMemoryLimited() {
+        #expect(evaluate(memory: memory(pressure: .critical)) == [.memoryLimited])
+    }
+
+    @Test func criticalThermalIsThermalLimited() {
+        #expect(evaluate(thermal: .critical) == [.thermalLimited])
+    }
+
+    @Test func fairThermalIsNotLimited() {
+        #expect(evaluate(thermal: .fair).isEmpty)
+    }
+
+    @Test func diskFreeExactlyAtThresholdIsNotTight() {
+        let config = LimitConfig()
+        #expect(UInt64(Double(500 * gb) * config.diskTightFraction) == 50_000_000_000)
+        #expect(!LimitEvaluator.isDiskTight(free: 50 * gb, capacity: 500 * gb, config: config))
+    }
+
+    @Test func diskMinimumWinsOnSmallDisk() {
+        #expect(LimitEvaluator.isDiskTight(free: 40 * gb, capacity: 300 * gb, config: LimitConfig()))
+    }
 }
