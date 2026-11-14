@@ -116,7 +116,8 @@ public struct DiskSampler {
         return internalDrives > 0 ? totals : nil
     }
 
-    // The interconnect location lives on a parent of the driver, not on the driver itself.
+    // The interconnect location lives on a parent of the driver, not on the driver itself. Swift imports the
+    // search result as managed (CF_RETURNS_RETAINED), so ARC releases it; no takeRetainedValue() here.
     private static func isInternal(_ service: io_object_t) -> Bool {
         guard
             let property = IORegistryEntrySearchCFProperty(
