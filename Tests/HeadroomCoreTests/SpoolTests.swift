@@ -94,21 +94,54 @@ private func makeSpool() throws -> (Spool, URL) {
         #expect(try JSONDecoder().decode(SpoolRecord.self, from: data) == record)
     }
 
-    @Test func concurrentAppends() async throws {
+    @Test func unreadableIngestingIsNotOverwritten() throws {
         let (spool, dir) = try makeSpool()
         defer { try? FileManager.default.removeItem(at: dir) }
-        await withTaskGroup(of: Void.self) { group in
-            for t in 0..<8 {
-                group.addTask {
-                    for i in 0..<200 {
-                        spool.append(.tag(ts: Double(t * 1000 + i), text: "task \(t) record \(i)"))
-                    }
-                }
+        let ingesting = URL(fileURLWithPath: spool.url.path + ".ingesting")
+        try FileManager.default.createDirectory(at: ingesting, withIntermediateDirectories: true)
+        let record = SpoolRecord.tag(ts: 1, text: "keep me")
+        #expect(spool.append(record))
+
+        let result = spool.drain()
+        #expect(result.records.isEmpty)
+        #expect(result.malformed == 0)
+        let raw = try String(contentsOf: spool.url, encoding: .utf8)
+        #expect(raw.contains("keep me"))
+
+        try FileManager.default.removeItem(at: ingesting)
+        _ = spool.drain()
+        #expect(spool.drain().records == [record])
+    }
+
+    @Test func appendRejectedWhenSpoolIsOversized() throws {
+        let (spool, dir) = try makeSpool()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let fd = open(spool.url.path, O_WRONLY | O_CREAT, 0o600)
+        #expect(fd >= 0)
+        #expect(ftruncate(fd, 16 * 1024 * 1024 + 1) == 0)
+        close(fd)
+        #expect(!spool.append(.tag(ts: 1, text: "x")))
+        let size = try FileManager.default.attributesOfItem(atPath: spool.url.path)[.size] as? Int
+        #expect(size == 16 * 1024 * 1024 + 1)
+    }
+
+    @Test func concurrentAppends() throws {
+        let (spool, dir) = try makeSpool()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        DispatchQueue.concurrentPerform(iterations: 8) { t in
+            for i in 0..<200 {
+                spool.append(.tag(ts: Double(t), text: "\(t)-\(i)"))
             }
         }
         _ = spool.drain()
         let result = spool.drain()
-        #expect(result.records.count == 1600)
         #expect(result.malformed == 0)
+        #expect(result.records.count == 1600)
+        let expected = Set((0..<8).flatMap { t in (0..<200).map { "\(t)-\($0)" } })
+        let actual = Set(result.records.compactMap { record -> String? in
+            if case let .tag(_, text) = record { return text }
+            return nil
+        })
+        #expect(actual == expected)
     }
 }

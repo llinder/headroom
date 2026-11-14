@@ -13,7 +13,7 @@ public enum SpoolRecord: Codable, Sendable, Equatable {
         case tag, command, agentSession
     }
 
-    public init(from decoder: Decoder) throws {
+    public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         switch try c.decode(Kind.self, forKey: .type) {
         case .tag:
@@ -34,7 +34,7 @@ public enum SpoolRecord: Codable, Sendable, Equatable {
         }
     }
 
-    public func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         switch self {
         case let .tag(ts, text):
@@ -60,8 +60,12 @@ public enum SpoolRecord: Codable, Sendable, Equatable {
 
 /// Producers append one line with a single O_APPEND write; only headroomd drains.
 public struct Spool: Sendable {
-    /// A single write up to PIPE_BUF is atomic under O_APPEND, so lines never interleave.
+    /// O_APPEND seeks to end of file and writes in one step, and a single bounded write of
+    /// at most this size makes a short write, and so interleaving between writers, practically impossible.
     private static let maxLineBytes = 4096
+    /// Bounds what headroomd must read after a long stop; further appends are dropped.
+    private static let maxFileBytes: Int64 = 16 * 1024 * 1024
+    private static let maxWriteAttempts = 3
 
     public let url: URL
 
@@ -82,17 +86,33 @@ public struct Spool: Sendable {
         let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0o600)
         guard fd >= 0 else { return false }
         defer { close(fd) }
-        let written = line.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
-        return written == line.count
+
+        var st = stat()
+        guard fstat(fd, &st) == 0, Int64(st.st_size) <= Self.maxFileBytes else { return false }
+
+        for _ in 0..<Self.maxWriteAttempts {
+            let written = line.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+            if written == line.count { return true }
+            // EINTR means nothing was written, so retrying cannot duplicate a line.
+            if written < 0 && errno == EINTR { continue }
+            return false
+        }
+        return false
     }
 
     /// Drains one cycle behind: the previous cycle's renamed file is read first, so a
     /// writer that opened the file just before the rename has had a full cycle to finish.
+    /// If that file can't be read, nothing is rotated, so an unread batch is never overwritten.
     public func drain() -> (records: [SpoolRecord], malformed: Int) {
         var records: [SpoolRecord] = []
         var malformed = 0
 
-        if let data = FileManager.default.contents(atPath: ingestingPath) {
+        switch readIngesting() {
+        case .failed:
+            return ([], 0)
+        case .missing:
+            break
+        case let .data(data):
             let decoder = JSONDecoder()
             let pieces = data.split(separator: 0x0A, omittingEmptySubsequences: false)
             for (i, piece) in pieces.enumerated() {
@@ -108,5 +128,30 @@ public struct Spool: Sendable {
 
         rename(url.path, ingestingPath)
         return (records, malformed)
+    }
+
+    private enum IngestingRead {
+        case data(Data)
+        case missing
+        case failed
+    }
+
+    private func readIngesting() -> IngestingRead {
+        let fd = open(ingestingPath, O_RDONLY | O_CLOEXEC)
+        if fd < 0 { return errno == ENOENT ? .missing : .failed }
+        defer { close(fd) }
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let n = read(fd, &buffer, buffer.count)
+            if n > 0 {
+                data.append(buffer, count: n)
+            } else if n == 0 {
+                return .data(data)
+            } else if errno != EINTR {
+                return .failed
+            }
+        }
     }
 }
