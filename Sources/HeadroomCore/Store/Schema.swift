@@ -1,6 +1,4 @@
 public enum Schema {
-    public static let version = 1
-
     // Append-only: entry N upgrades a database from version N to N+1.
     private static let migrations: [String] = [
         """
@@ -81,6 +79,11 @@ public enum Schema {
         try db.transaction {
             try db.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
             let current = try storedVersion(db)
+            // An older build would otherwise write rows into tables whose meaning a newer one has changed.
+            guard current <= migrations.count else {
+                throw DatabaseError.open(
+                    "database schema v\(current) is newer than this headroom (v\(migrations.count))")
+            }
             guard current < migrations.count else { return }
             for index in current..<migrations.count {
                 try db.exec(migrations[index])

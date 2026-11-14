@@ -40,6 +40,18 @@ private func column(_ db: Database, _ sql: String) throws(DatabaseError) -> [Str
         #expect(try column(db, "SELECT value FROM meta WHERE key='schema_version'") == ["1"])
     }
 
+    @Test func newerSchemaIsRefused() throws {
+        let path = tempDBPath()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let db = try Database(path: path, readOnly: false)
+        try Schema.migrate(db)
+        try db.exec("UPDATE meta SET value='2' WHERE key='schema_version'")
+        #expect(throws: DatabaseError.open("database schema v2 is newer than this headroom (v1)")) {
+            try Schema.migrate(db)
+        }
+        #expect(try column(db, "SELECT value FROM meta WHERE key='schema_version'") == ["2"])
+    }
+
     @Test func concurrentMigrationsOnSameFileBothSucceed() throws {
         for _ in 0..<5 {
             let path = tempDBPath()
