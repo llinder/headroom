@@ -169,7 +169,7 @@ one is ignored with a warning, never overwritten.
 |---|---|
 | `headroom.db` | the SQLite database (written only by the recorder) |
 | `config.json` | thresholds, with the defaults below |
-| `groups.json` | workload rules; written with the defaults on first run so you can edit it |
+| `groups.json` | your own workload rules, matched before the built-in ones (never written by headroom) |
 | `tiers.json` | the configurations a recommendation rounds up to |
 | `baseline.json` | an optional reference workload for the comparison page |
 
@@ -199,10 +199,29 @@ tree uses at least 5% of a core (or its non-agent members, such as builds, are
 working). Agent capacity is the largest N where every level up to N has at least
 1 hour of samples and is limited under 5% of the time.
 
-**`groups.json`** maps process names (with `*` wildcards) and executable path
+Workload rules map process names (with `*` wildcards) and executable path
 prefixes to workload groups. A process's own rule wins; otherwise it takes the
 group of its nearest classified ancestor, so `go test` run by an agent counts as
-Go builds. Defaults:
+Go builds.
+
+**`groups.json`** is optional and holds only your own rules. They are matched
+before the built-in ones, so a rule there wins over a default, and the defaults
+still cover everything else. The recorder and the agent hook read the same
+file. headroom never writes it; an invalid file is ignored with a warning.
+The recorder reads it at start, so restart it after editing
+(`launchctl kickstart -k gui/$(id -u)/io.github.llinder.headroom`).
+
+```json
+{
+  "rules": [
+    { "group": "agents", "names": ["my-agent"], "pathPrefixes": [] },
+    { "group": "ide", "names": [], "pathPrefixes": ["/Applications/Nova.app/"] }
+  ]
+}
+```
+
+Groups are `containers`, `go`, `agents`, `ide`, `browsers`, `communication`,
+`system` and `other`. Built-in rules:
 
 | Group | Matches |
 |---|---|

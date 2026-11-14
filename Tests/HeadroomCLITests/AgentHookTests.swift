@@ -73,6 +73,23 @@ private let releaseBinary: URL? = {
         ])
     }
 
+    @Test func userAgentRulesMoveTheRoot() throws {
+        let dir = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let spool = Spool(url: dir.appending(path: "spool.jsonl"))
+        let chain: [Int32: ProcessIdentity] = [
+            10: identity(10, ppid: 20, path: "/usr/local/bin/claude"),
+            20: identity(20, ppid: 1, path: "/opt/bin/agent-wrapper"),
+        ]
+        let rules = dir.appending(path: "groups.json")
+        try Data(#"{"rules":[{"group":"agents","names":["agent-wrapper"],"pathPrefixes":[]}]}"#.utf8).write(to: rules)
+        let stdin = Data(#"{"session_id":"s"}"#.utf8)
+        #expect(AgentHook.record(
+            tool: "claude", stdin: stdin, parentPid: 10, lookup: { chain[$0] }, spool: spool, now: 1,
+            rules: GroupRules.effective(from: rules).0))
+        #expect(spooled(spool) == [.agentSession(ts: 1, tool: "claude", sessionId: "s", model: nil, rootPid: 20, rootStart: 20_000)])
+    }
+
     @Test func modelIsOptional() throws {
         let dir = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }

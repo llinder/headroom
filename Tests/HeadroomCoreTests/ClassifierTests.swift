@@ -84,21 +84,38 @@ struct ClassifierTests {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("groups-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
         try Data("[1,2".utf8).write(to: url)
-        let (rules, warning) = GroupRules.load(from: url)
-        #expect(rules.rules == GroupRules.defaults.rules)
+        let (rules, warning) = GroupRules.effective(from: url)
+        #expect(rules == GroupRules.defaults)
         #expect(warning != nil)
         #expect(try Data(contentsOf: url) == Data("[1,2".utf8))
     }
 
-    @Test func missingRulesFileWritesDefaults() throws {
+    @Test func missingRulesFileIsNotCreated() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("headroom-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = dir.appendingPathComponent("groups.json")
-        let (rules, warning) = GroupRules.load(from: url)
+        let (rules, warning) = GroupRules.effective(from: url)
         #expect(warning == nil)
         #expect(rules == GroupRules.defaults)
-        let decoded = try JSONDecoder().decode(GroupRules.self, from: Data(contentsOf: url))
-        #expect(decoded == GroupRules.defaults)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(!FileManager.default.fileExists(atPath: dir.path))
+    }
+
+    @Test func rulesFileOverridesMatchBeforeDefaults() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("groups-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let file = #"{"rules":[{"group":"agents","names":["my-agent"],"pathPrefixes":[]},{"group":"ide","names":["claude"],"pathPrefixes":[]}]}"#
+        try Data(file.utf8).write(to: url)
+        let (rules, warning) = GroupRules.effective(from: url)
+        #expect(warning == nil)
+        #expect(rules.rules.count == GroupRules.defaults.rules.count + 2)
+        #expect(Array(rules.rules.dropFirst(2)) == GroupRules.defaults.rules)
+        #expect(try Data(contentsOf: url) == Data(file.utf8))
+
+        let c = Classifier(rules: rules, currentUID: ClassifierTests.me)
+        #expect(c.ownGroup(proc(1, 0, "my-agent")) == .agents)
+        #expect(c.ownGroup(proc(2, 0, "claude")) == .ide)
+        #expect(c.ownGroup(proc(3, 0, "gopls")) == .goBuilds)
     }
 
     @Test func reportFolding() {

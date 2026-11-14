@@ -207,8 +207,11 @@ Cost control for the process sweep:
 
 ### Workload groups
 
-A rules file at `~/Library/Application Support/headroom/groups.json`, created
-with defaults on first run, maps processes to groups. Each rule matches on
+Built-in default rules map processes to groups. An optional
+`~/Library/Application Support/headroom/groups.json` adds the user's own
+rules, matched before the defaults; headroom never writes it, and an invalid
+file means defaults only, with a warning. The recorder and the agent hook load
+the same effective rules, so they agree on an agent's root. Each rule matches on
 executable path prefix or process name. **Classification:** a process's own
 rule wins. If it has none, it takes the group of its **nearest** classified
 ancestor. Unmatched processes with no classified ancestor go to **Other**.

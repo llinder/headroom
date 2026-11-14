@@ -95,23 +95,14 @@ public struct GroupRules: Codable, Sendable, Equatable {
         GroupRule(group: .communication, names: ["Slack*", "zoom.us", "Microsoft Teams*"]),
     ])
 
-    /// A missing file is written out with the defaults so users can edit it. An invalid file is left
-    /// untouched: overwriting it would destroy the user's edits.
-    public static func load(from url: URL) -> (GroupRules, warning: String?) {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: url.path) else {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            do {
-                try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try encoder.encode(defaults).write(to: url, options: .atomic)
-                return (defaults, nil)
-            } catch {
-                return (defaults, "could not write \(url.path): \(error.localizedDescription)")
-            }
-        }
+    /// The file holds only the user's own rules, matched before the defaults, so a future release's new
+    /// defaults still apply. It is never written: a missing file means defaults only, and an invalid one is
+    /// left untouched, because overwriting it would destroy the user's edits.
+    public static func effective(from url: URL) -> (GroupRules, warning: String?) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return (defaults, nil) }
         do {
-            return (try JSONDecoder().decode(GroupRules.self, from: Data(contentsOf: url)), nil)
+            let overrides = try JSONDecoder().decode(GroupRules.self, from: Data(contentsOf: url))
+            return (GroupRules(rules: overrides.rules + defaults.rules), nil)
         } catch {
             return (defaults, "ignoring \(url.path): \(error.localizedDescription)")
         }

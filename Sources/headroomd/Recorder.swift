@@ -53,7 +53,7 @@ final class Recorder {
 
         let (config, configWarning) = HeadroomConfig.load(from: paths.config)
         if let configWarning { log.warning("config: \(configWarning)") }
-        let (rules, rulesWarning) = GroupRules.load(from: paths.groups)
+        let (rules, rulesWarning) = GroupRules.effective(from: paths.groups)
         if let rulesWarning { log.warning("group rules: \(rulesWarning)") }
 
         machineId = machine.machineId

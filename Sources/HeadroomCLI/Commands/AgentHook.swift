@@ -18,7 +18,8 @@ public enum AgentHook {
         let paths = Paths.standard()
         let recorded = record(
             tool: tool, stdin: readStdin(fd: STDIN_FILENO), parentPid: getppid(), lookup: ProcessSampler.identity,
-            spool: Spool(url: paths.spool), now: Date().timeIntervalSince1970)
+            spool: Spool(url: paths.spool), now: Date().timeIntervalSince1970,
+            rules: GroupRules.effective(from: paths.groups).0)
         if !recorded { FileHandle.standardError.write(Data("headroom: agent-hook recorded nothing\n".utf8)) }
         return 0
     }
@@ -30,10 +31,11 @@ public enum AgentHook {
     }
 
     static func record(
-        tool: String, stdin: Data, parentPid: Int32, lookup: (Int32) -> ProcessIdentity?, spool: Spool, now: Double
+        tool: String, stdin: Data, parentPid: Int32, lookup: (Int32) -> ProcessIdentity?, spool: Spool, now: Double,
+        rules: GroupRules = .defaults
     ) -> Bool {
         guard tools.contains(tool), let payload = try? JSONDecoder().decode(Payload.self, from: stdin),
-            let root = outermostAgent(from: parentPid, lookup: lookup)
+            let root = outermostAgent(from: parentPid, lookup: lookup, rules: rules)
         else { return false }
         return spool.append(
             .agentSession(
@@ -41,10 +43,11 @@ public enum AgentHook {
                 rootStart: root.key.start))
     }
 
-    /// Uses the built-in rules rather than the user's groups.json so the hook stays fast; the recorder's
-    /// AgentTracker only sees the same root when the user hasn't customised the agents group.
-    private static func outermostAgent(from start: Int32, lookup: (Int32) -> ProcessIdentity?) -> ProcessIdentity? {
-        let classifier = Classifier(rules: .defaults, currentUID: getuid())
+    /// Takes the same effective rules as the recorder, so the root it names is the one AgentTracker roots on.
+    private static func outermostAgent(
+        from start: Int32, lookup: (Int32) -> ProcessIdentity?, rules: GroupRules
+    ) -> ProcessIdentity? {
+        let classifier = Classifier(rules: rules, currentUID: getuid())
         var outermost: ProcessIdentity?
         var pid = start
         for _ in 0..<maxHops {

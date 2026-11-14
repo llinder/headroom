@@ -37,9 +37,7 @@ final class TopSession {
         let (config, _) =
             FileManager.default.fileExists(atPath: paths.config.path)
             ? HeadroomConfig.load(from: paths.config) : (HeadroomConfig(), nil)
-        // GroupRules.load writes a default file when none exists; a viewer shouldn't create config.
-        let rules =
-            FileManager.default.fileExists(atPath: paths.groups.path) ? GroupRules.load(from: paths.groups).0 : .defaults
+        let rules = GroupRules.effective(from: paths.groups).0
         pipeline = SamplingPipeline(
             classifier: Classifier(rules: rules, currentUID: getuid()), config: config, interval: 1)
     }
