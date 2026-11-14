@@ -51,6 +51,13 @@ private func commands(_ data: Data) throws -> [String] {
         #expect(HookConfig.contains(twice))
     }
 
+    @Test func mergeWithMarkerReturnsTheOriginalBytes() throws {
+        let installed = Data(
+            #"{ "zeta": 1, "hooks": {"SessionStart": [{"hooks": [{"command": "\#(ours)", "type": "command"}]}]}, "alpha": "a/b" }"#
+                .utf8)
+        #expect(try HookConfig.merged(installed, command: ours) == installed)
+    }
+
     @Test func removeOnlyOurs() throws {
         let merged = try HookConfig.merged(Data(existing.utf8), command: ours)
         let out = try HookConfig.removed(merged)
@@ -185,6 +192,19 @@ private final class Home {
         let before = try FileManager.default.contentsOfDirectory(atPath: claudeDir)
         _ = h.install(agents: true)
         #expect(try FileManager.default.contentsOfDirectory(atPath: claudeDir).count == before.count)
+    }
+
+    @Test func installedFileIsLeftByteIdentical() throws {
+        let h = try Home()
+        let settings = h.home.appending(path: ".claude/settings.json")
+        let abs = h.home.appending(path: ".local/bin/headroom").path
+        let installed = Data(
+            #"{ "zeta": 1, "hooks": {"SessionStart": [{"hooks": [{"command": "\#(abs) agent-hook claude"}]}]} }"#.utf8)
+        try installed.write(to: settings)
+        let (_, out, _) = h.install(agents: true)
+        #expect(try Data(contentsOf: settings) == installed)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: h.home.appending(path: ".claude").path) == ["settings.json"])
+        #expect(!out.contains { $0.hasPrefix("updated") })
     }
 
     @Test func nonObjectFileIsLeftAlone() throws {

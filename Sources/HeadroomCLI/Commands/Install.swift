@@ -27,9 +27,10 @@ enum HookConfig {
     static let marker = "headroom agent-hook"
     private static let writing: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
 
+    /// An already-installed file comes back as the same bytes, so a reinstall never rewrites, re-sorts or backs it up.
     static func merged(_ json: Data?, command: String) throws -> Data {
         var root = try parse(json)
-        if contains(root) { return try encode(root) }
+        if let json, contains(root) { return json }
         var hooks = try section(root["hooks"])
         var groups = try groupList(hooks["SessionStart"])
         let entry: [String: Any] = ["type": "command", "command": command, "timeout": 5]
