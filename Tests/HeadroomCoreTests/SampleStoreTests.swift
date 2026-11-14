@@ -432,6 +432,23 @@ private func run(_ pid: Int32, cpu: Double, footprint: UInt64, write: UInt64 = 0
         }
     }
 
+    @Test func retentionKeepsExpiredMinuteRowsWhoseHourHasNoHourlyRow() throws {
+        let f = try Fixture()
+        let rolled = base - 91 * 86_400
+        let skipped = rolled + 3600
+        for ts in [rolled + 60, skipped + 60] {
+            try f.db.exec("INSERT INTO rollup VALUES('m', 60, \(ts), 'cpuBusy', 0.5, 0.9, 0.8)")
+            try f.db.exec("INSERT INTO limit_seconds VALUES('m', 60, \(ts), 'cpuSaturated', 30)")
+        }
+        try f.db.exec("INSERT INTO rollup VALUES('m', 3600, \(rolled), 'cpuBusy', 0.5, 0.9, 0.8)")
+        try f.db.exec("INSERT INTO limit_seconds VALUES('m', 3600, \(rolled), 'cpuSaturated', 30)")
+        try f.store.applyRetention(now: Double(base))
+        for table in ["rollup", "limit_seconds"] {
+            #expect(try f.int("SELECT COUNT(*) FROM \(table) WHERE resolution=60 AND ts=\(rolled + 60)") == 0)
+            #expect(try f.int("SELECT COUNT(*) FROM \(table) WHERE resolution=60 AND ts=\(skipped + 60)") == 1)
+        }
+    }
+
     @Test func flushFailureKeepsBounded() throws {
         let f = try Fixture()
         // A second connection holding the write lock makes BEGIN IMMEDIATE fail after the busy timeout.
