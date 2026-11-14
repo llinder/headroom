@@ -333,8 +333,8 @@ public final class SampleStore {
     }
 
     /// Ends runs left open by a crash or reboot, at their last usage minute or else `fallbackEnd`. Called before
-    /// sampling starts: the tracker begins empty and re-creates every run still alive, so any run open now is
-    /// one nothing will ever end.
+    /// sampling starts: the tracker begins empty, so runs that are still live are reopened by the next tick and
+    /// only runs whose processes are gone stay closed.
     public func closeOrphanRuns(machineId: String, fallbackEnd: Double) throws {
         let stmt = try db.prepare(
             """

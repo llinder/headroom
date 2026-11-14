@@ -72,7 +72,8 @@ employer or hardware request.
   discredits its report.
 - **A report only an engineer can read.**
 - **Agent integration that slows agents down.** Hooks and the status-line
-  segment must return in single-digit milliseconds and never fail an agent's
+  segment must return in single-digit milliseconds (process launch dominates,
+  about 4 ms) and never fail an agent's
   action because headroom is missing or broken.
 
 ## Constraints
@@ -140,11 +141,12 @@ read-only.
 
 **Live state.** `headroomd` also keeps a fixed-size binary file,
 `~/Library/Application Support/headroom/live.state` (latest sample: CPU,
-memory, pressure, swap, disk, active agents, thermal, timestamp). It's mapped
-with `mmap`, updated in place every 10 s with a sequence counter so readers
-never see a torn record, and never `fsync`'d. The status line and the agent
-hooks read only this file, which keeps them to microseconds with no SQLite
-open.
+memory, pressure, swap, disk, active agents, thermal, timestamp). It's written
+to a temp file and atomically renamed every 10 s, and never `fsync`'d. Readers
+do one `pread`, so they can't see a torn record and need no mapping or sequence
+counter; a rename replaces the whole file, which an in-place update couldn't
+guarantee without one. The status line and the agent hooks read only this
+file, which keeps them to microseconds with no SQLite open.
 
 ### Data flow
 
@@ -153,7 +155,7 @@ open.
             │  every 10 s                   │           Claude Code / Codex hooks
             ▼                               │  ingested every 10 s
        headroomd ◄──────────────────────────┘
-            │  ├──► live.state (mmap, every 10 s) ──► headroom statusline / agent-hook
+            │  ├──► live.state (atomic rename, every 10 s) ──► headroom statusline / agent-hook
             │  └──► power + thermal events
             ▼
    1-min accumulator ──► SQLite (WAL, headroomd is the only writer)
@@ -269,9 +271,12 @@ finds the run root by walking up from its parent pid, and appends
 exits 0, and its budget is a hard 5 ms.
 
 **Active vs idle.** A run is **active** in a 10 s sample if, over the trailing
-60 s, its process tree used at least 5% of one core, or it has any descendant
-outside the AI-agents group (a build, a test, a `docker` CLI). Otherwise it's
-idle, like a session left at the prompt overnight. `active_agents` and agent
+60 s, its process tree used at least 5% of one core, or its non-agent members
+(a build, a test, a `docker` CLI) used at least 0.5 CPU-seconds in the
+interval. Presence alone doesn't count: an idle session keeps language-server
+and similar child processes alive, so "has a descendant" would make every
+session look busy. Otherwise it's idle, like a session left at the prompt
+overnight. `active_agents` and agent
 capacity count active runs only. `top` shows both.
 
 Tables:
@@ -301,14 +306,18 @@ active-agent count, the seconds observed, the memory-limited seconds and the
 CPU-saturated seconds: a small histogram kept forever.
 
 For each level N (1, 2, 3 …), **limited share** is the fraction of time at N
-that was memory-limited or CPU-saturated. **Agent capacity** is the largest N
+that was memory-limited or CPU-saturated. The histogram doesn't store the
+union of the two, so it's computed as the larger of the memory-limited and
+CPU-saturated shares. That's a lower bound on the true share, so capacity can
+read slightly optimistic. **Agent capacity** is the largest N
 such that **every** level from 1 to N has at least 1 hour of samples and a
 limited share under 5%. It stops at the first level that fails, even if a
 higher level happens to pass.
 
 - Page 1 sentence: "This machine handles 3 AI agents at once. With 4 it runs
   out of memory 22% of the time." The resource named is whichever of memory
-  and CPU has the larger limited share at N+1. If even 1 agent fails: "This
+  and CPU has the larger limited share at N+1. Levels with under 1 hour of
+  samples stop the walk. If even 1 agent fails: "This
   machine runs short of memory even with a single AI agent (limited 9% of the
   time)."
 - It needs at least 5 hours of active-agent samples in total, and at least
@@ -414,7 +423,8 @@ Tables (the builder finalizes columns and indexes):
 - `agent_runs`, `agent_run_sessions`, `run_usage` (above)
 - `events(machine_id, ts, kind, payload JSON)`, where kind is one of `tag`,
   `sleep`, `wake`, `thermal`, `jetsam`, `hang`, `recorder_start`,
-  `recorder_stop`, `command`, `agent_warning`, `leftover`.
+  `recorder_stop`, `command`, `agent_warning`, `leftover`. Hang and jetsam
+  events store no file name, only the kind and time.
 - `coverage(machine_id, day, seconds_awake, seconds_recorded, seconds_asleep, gaps JSON)`
 - `meta(key, value)`: schema version.
 
@@ -448,6 +458,10 @@ The thresholds live in `config.json`, with these defaults.
 ## Coverage and gaps
 
 - `headroomd` writes a heartbeat with each 60 s batch.
+- If a wake notification is missed, 6 consecutive ticks that see the machine
+  asleep resume recording, so a lost wake can't leave a silent gap.
+- Coverage is recomputed per day from the samples and events, so it's
+  idempotent: running it again gives the same answer.
 - Sleep and wake come from IOKit power notifications, so asleep time isn't a
   gap.
 - On start, `headroomd` compares the last heartbeat with now, using the wake
@@ -502,7 +516,9 @@ Commands:
   whole status line.
 - `headroom hook zsh`: prints a `preexec`/`precmd` snippet that records
   commands taking more than 30 s as `command` events: the executable name and
-  duration only, never arguments. Reports show only totals per workload group
+  duration only, never arguments. It skips leading `NAME=value` assignments
+  and redirections, and the recorder rejects names outside `[A-Za-z0-9._+-]`
+  or longer than 64 characters. Reports show only totals per workload group
   ("waited 2.1 h/week on Go builds and tests").
 
 ## The report
@@ -520,6 +536,10 @@ the limit". Titled "Hardware capacity report: <machine model>, <date range>".
 - Agent capacity, one sentence (above).
 - **Recommended spec:** one box, for example "Recommended: 64 GB memory, 14+
   cores, 2 TB storage", with one line of reasoning each.
+
+Honesty rules: with no workday in the range there are no verdicts and no
+spec box. Storage growth and SSD-wear projections need at least 7 days of
+data. Capacity bars are drawn only for levels that were judged.
 
 **Page 2, the picture.** One chart per resource: daily max and p95 over the
 range, the machine's limit as a red line, and tags as markers. Plus the agent
@@ -550,6 +570,8 @@ concurrent agents, and a free-text note on the source. The repo ships
   recommend the next core-count tier.
 - **Storage:** used space + 12 months of linear growth + 20%, rounded up to the
   next tier.
+- Storage tiers are decimal GB, as Apple sells them (512, 1000, 2000 …);
+  memory tiers are binary.
 - The tiers live in an editable `tiers.json` (shipped with Apple's current
   MacBook Pro memory, core and storage options), so the report can be updated
   without code changes.
@@ -561,7 +583,7 @@ concurrent agents, and a free-text note on the source. The repo ships
 - `ProcessType=Background`; a single `DispatchSourceTimer` with leeway; no
   busy loops; no Foundation-heavy formatting on the hot path.
 - It records its own usage each sample. `status` and the report show it.
-- `statusline` and `agent-hook` under 5 ms; `statusline` aims for 2 ms.
+- `statusline` and `agent-hook` in single-digit milliseconds (process launch dominates, about 4 ms), with wall-clock budgets enforced in `make bench`.
 - Benchmark tests: a full sampling pass run 1,000 times, and 1,000
   `statusline` invocations, each failing above a budget the builder sets after
   measuring.
@@ -607,7 +629,7 @@ Calls made in this design (overridable):
 - Agent capacity stops at the first failing level and is reported as a
   correlation.
 - Per-run container attribution waits for phase 1.5.
-- `live.state` as an mmap'd file with a sequence counter.
+- `live.state` as a small file replaced by atomic rename every 10 s.
 - No root, so other users' processes go into the unattributed bucket.
 - Repo names are never stored, only shown live in `top`.
 - The LaunchAgent label `io.github.llinder.headroom`.
