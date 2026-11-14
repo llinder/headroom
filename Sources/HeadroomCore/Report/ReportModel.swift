@@ -233,6 +233,7 @@ public struct ReportModel: Sendable {
         var notes = [
             "Agent capacity is measured while that many agents were active; it is a correlation, not proof that agents caused all of the load.",
             "Work inside containers is counted under Containers & Kind, not under the agent that started it.",
+            "Processes that start and exit between two 10-second samples are counted as macOS system.",
         ]
         if from < now.addingTimeInterval(-rawRetention) {
             notes.append(

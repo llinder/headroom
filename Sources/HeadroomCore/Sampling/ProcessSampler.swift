@@ -64,6 +64,7 @@ public struct ProcessSampler {
     private var nameBuffer = [UInt8](repeating: 0, count: 256)
     private var previous: [ProcessKey: Totals] = [:]
     private var identities: [ProcessKey: ProcessIdentity] = [:]
+    private var previousSweep: UInt64?
 
     public init() {
         var info = mach_timebase_info_data_t()
@@ -78,13 +79,35 @@ public struct ProcessSampler {
         return ticks * Double(timebase.numer) / Double(timebase.denom) / 1e9
     }
 
-    /// A key not seen before has no baseline, so its first sweep reports zero rather than lifetime CPU.
-    static func delta(previous: [ProcessKey: Totals], key: ProcessKey, total: Double) -> Double {
-        guard let prior = previous[key] else { return 0 }
+    /// A key with no baseline that started at or after the previous sweep was born this interval, so its whole
+    /// lifetime total belongs to it. Any other unseen key (the first sweep, or one after a discard) already
+    /// existed, and its lifetime total would be misread as this interval's work.
+    static func bornSince(_ key: ProcessKey, previousSweep: UInt64?) -> Bool {
+        guard let previousSweep else { return false }
+        return key.start >= previousSweep
+    }
+
+    static func delta(previous: [ProcessKey: Totals], key: ProcessKey, total: Double, previousSweep: UInt64?) -> Double {
+        guard let prior = previous[key] else { return bornSince(key, previousSweep: previousSweep) ? total : 0 }
         return total >= prior.cpu ? total - prior.cpu : 0
     }
 
+    static func writeDelta(prior: Totals?, key: ProcessKey, total: UInt64, previousSweep: UInt64?) -> UInt64 {
+        guard let prior else { return bornSince(key, previousSweep: previousSweep) ? total : 0 }
+        return counterDelta(prior.diskWrite, total)
+    }
+
+    /// Wall-clock microseconds since the epoch, the same clock as `ProcessKey.start`.
+    private static func wallMicros() -> UInt64 {
+        var now = timeval()
+        gettimeofday(&now, nil)
+        return UInt64(now.tv_sec) &* 1_000_000 &+ UInt64(now.tv_usec)
+    }
+
     public mutating func sweep() -> [ProcessUsage] {
+        // Taken before the pid list, so a process born while this sweep runs but missed by it still counts as
+        // born after this sweep on the next one.
+        let sweepTime = Self.wallMicros()
         let count = listPids()
         var usages: [ProcessUsage] = []
         usages.reserveCapacity(count)
@@ -122,16 +145,18 @@ public struct ProcessSampler {
             usages.append(
                 ProcessUsage(
                     identity: identity,
-                    cpuSeconds: Self.delta(previous: previous, key: key, total: total),
+                    cpuSeconds: Self.delta(previous: previous, key: key, total: total, previousSweep: previousSweep),
                     footprint: rusage.ri_phys_footprint,
                     diskReadBytes: prior.map { counterDelta($0.diskRead, rusage.ri_diskio_bytesread) } ?? 0,
-                    diskWriteBytes: prior.map { counterDelta($0.diskWrite, rusage.ri_diskio_byteswritten) } ?? 0,
+                    diskWriteBytes: Self.writeDelta(
+                        prior: prior, key: key, total: rusage.ri_diskio_byteswritten, previousSweep: previousSweep),
                     attributed: true))
             nextPrevious[key] = Totals(
                 cpu: total, diskRead: rusage.ri_diskio_bytesread, diskWrite: rusage.ri_diskio_byteswritten)
         }
         previous = nextPrevious
         identities = nextIdentities
+        previousSweep = sweepTime
         return usages
     }
 

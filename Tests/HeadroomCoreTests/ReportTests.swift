@@ -264,6 +264,8 @@ private func fullText(_ doc: PDFDocument) -> String {
         #expect(appendix.contains(
             "Agent capacity is measured while that many agents were active; it is a correlation, not proof that agents caused all of the load."))
         #expect(appendix.contains("Work inside containers is counted under Containers & Kind, not under the agent that started it."))
+        #expect(appendix.contains(
+            "Processes that start and exit between two 10-second samples are counted as macOS system."))
         #expect(appendix.contains("headroomd used 0.05% of one core and at most 9.0 MB of memory."))
         #expect(m.appendix.events["hang"] == 2)
         #expect(m.appendix.agentRunCount == 1)
