@@ -176,8 +176,9 @@ private func column(_ db: Database, _ sql: String) throws(DatabaseError) -> [Str
         // Exclusive mode keeps the file lock until the connection closes, not at COMMIT.
         try writer?.exec("COMMIT")
         writer = nil
-        while outcome.withLock({ $0 }) == nil { Thread.sleep(forTimeInterval: 0.01) }
-        #expect(outcome.withLock { $0 } != nil && outcome.withLock { $0 }?.hasPrefix("open failed") == false)
-        #expect(outcome.withLock { $0 } != "query failed")
+        let deadline = Date().addingTimeInterval(5)
+        while outcome.withLock({ $0 }) == nil, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        // The schema version and the held row: the reader saw the writer's committed data.
+        #expect(try #require(outcome.withLock { $0 }, "reader didn't finish within 5 s") == "2")
     }
 }
