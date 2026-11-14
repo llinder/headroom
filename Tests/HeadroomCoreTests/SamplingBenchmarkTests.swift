@@ -36,8 +36,8 @@ struct SamplingBenchmarkTests {
     // The pass sweeps every readable process, so its cost grows with the process count; a fixed 5 ms cap flaked
     // as a dev machine got busier. Measured in a debug build (what `swift test` runs) on an M-series machine:
     // 3.4–3.6 ms for ~410 swept processes (~8.5 µs each) when quiet, 4.7–5.1 ms for ~430 (~11 µs each) under
-    // load average 4. Release is about half that.
-    private let budgetPerProcess = Duration.microseconds(15)
+    // load average 4. Release is about half that. 20 µs leaves about 2× headroom at the loaded rate.
+    private let budgetPerProcess = Duration.microseconds(20)
 }
 
 struct SamplingPipelineTests {
