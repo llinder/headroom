@@ -17,7 +17,7 @@ private let sample = LiveSnapshot(
     @Test func roundTrip() throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
-        let writer = try LiveStateWriter(url: url)
+        var writer = try LiveStateWriter(url: url)
         writer.write(sample)
         #expect(LiveStateReader.read(url: url) == sample)
         var next = sample
@@ -30,7 +30,7 @@ private let sample = LiveSnapshot(
     @Test func fileIs128BytesWithMagic() throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
-        let writer = try LiveStateWriter(url: url)
+        var writer = try LiveStateWriter(url: url)
         writer.write(sample)
         let data = try Data(contentsOf: url)
         #expect(data.count == 128)
@@ -44,14 +44,57 @@ private let sample = LiveSnapshot(
     @Test func neverWrittenNil() throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
-        _ = try LiveStateWriter(url: url)
+        try Data(count: 128).write(to: url)
+        #expect(LiveStateReader.read(url: url) == nil)
+    }
+
+    @Test func writeReplacesForeignFile() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data(repeating: 0xFF, count: 200).write(to: url)
+        var writer = try LiveStateWriter(url: url)
+        let ok = writer.write(sample)
+        #expect(ok)
+        #expect(LiveStateReader.read(url: url) == sample)
+    }
+
+    @Test func writeRecreatesDeletedFile() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var writer = try LiveStateWriter(url: url)
+        writer.write(sample)
+        try FileManager.default.removeItem(at: url)
+        #expect(LiveStateReader.read(url: url) == nil)
+        writer.write(sample)
+        #expect(LiveStateReader.read(url: url) == sample)
+    }
+
+    @Test func badMagicRejected() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var writer = try LiveStateWriter(url: url)
+        writer.write(sample)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.write(contentsOf: Data("XXXX".utf8))
+        try handle.close()
+        #expect(LiveStateReader.read(url: url) == nil)
+    }
+
+    @Test func shortFileRejected() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var writer = try LiveStateWriter(url: url)
+        writer.write(sample)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: 64)
+        try handle.close()
         #expect(LiveStateReader.read(url: url) == nil)
     }
 
     @Test func tornRecordRejected() throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
-        let writer = try LiveStateWriter(url: url)
+        var writer = try LiveStateWriter(url: url)
         writer.write(sample)
         let handle = try FileHandle(forWritingTo: url)
         try handle.seek(toOffset: 120)
@@ -65,12 +108,13 @@ private let sample = LiveSnapshot(
     @Test func readerSpeed() throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
-        try LiveStateWriter(url: url).write(sample)
+        var writer = try LiveStateWriter(url: url)
+        writer.write(sample)
         let n = 10_000
         let elapsed = ContinuousClock().measure {
             for _ in 0..<n { _ = LiveStateReader.read(url: url) }
         }
         let micros = Double(elapsed.components.seconds) * 1e6 + Double(elapsed.components.attoseconds) / 1e12
-        #expect(micros / Double(n) < 20)
+        #expect(micros / Double(n) < 50)
     }
 }

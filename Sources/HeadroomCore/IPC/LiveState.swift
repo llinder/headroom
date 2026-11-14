@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 
 public struct LiveSnapshot: Sendable, Equatable {
     public var timestamp: Double
@@ -59,55 +58,54 @@ private enum Layout {
     static let seqEnd = 120
 }
 
-public final class LiveStateWriter {
-    private let fd: Int32
-    private let base: UnsafeMutableRawPointer
+// Each write builds the record off to the side and renames it into place. Rename is
+// atomic, so a reader's single pread always sees one whole record; deletion or
+// replacement of the file self-heals on the next write; and with no mapping there is
+// no SIGBUS when something truncates the file.
+public struct LiveStateWriter: Sendable {
+    private let url: URL
+    private let tmpURL: URL
+    private var seq: UInt64 = 0
 
     public init(url: URL) throws {
-        let fd = open(url.path, O_RDWR | O_CREAT, 0o644)
-        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        guard ftruncate(fd, off_t(Layout.size)) == 0 else {
-            let code = POSIXErrorCode(rawValue: errno) ?? .EIO
-            close(fd)
-            throw POSIXError(code)
-        }
-        let map = mmap(nil, Layout.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)
-        guard let map, map != MAP_FAILED else {
-            let code = POSIXErrorCode(rawValue: errno) ?? .EIO
-            close(fd)
-            throw POSIXError(code)
-        }
-        self.fd = fd
-        self.base = map
-        for (i, byte) in Layout.magic.enumerated() {
-            base.storeBytes(of: byte, toByteOffset: i, as: UInt8.self)
-        }
-        base.storeBytes(of: Layout.version.littleEndian, toByteOffset: Layout.versionOffset, as: UInt32.self)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        self.url = url
+        self.tmpURL = url.appendingPathExtension("tmp")
     }
 
-    deinit {
-        munmap(base, Layout.size)
+    @discardableResult
+    public mutating func write(_ s: LiveSnapshot) -> Bool {
+        seq &+= 1
+        if seq == 0 { seq = 1 }
+        var buf = [UInt8](repeating: 0, count: Layout.size)
+        buf.withUnsafeMutableBytes { base in
+            for (i, byte) in Layout.magic.enumerated() { base[i] = byte }
+            base.storeBytes(of: Layout.version.littleEndian, toByteOffset: Layout.versionOffset, as: UInt32.self)
+            base.storeBytes(of: seq.littleEndian, toByteOffset: Layout.seqBegin, as: UInt64.self)
+            base.storeBytes(of: s.timestamp.bitPattern.littleEndian, toByteOffset: Layout.timestamp, as: UInt64.self)
+            base.storeBytes(of: s.cpuBusy.bitPattern.littleEndian, toByteOffset: Layout.cpuBusy, as: UInt32.self)
+            base[Layout.pressure] = s.pressure
+            base[Layout.thermal] = s.thermal
+            base[Layout.limitFlags] = s.limitFlags
+            base.storeBytes(of: s.memUsed.littleEndian, toByteOffset: Layout.memUsed, as: UInt64.self)
+            base.storeBytes(of: s.memTotal.littleEndian, toByteOffset: Layout.memTotal, as: UInt64.self)
+            base.storeBytes(of: s.swapUsed.littleEndian, toByteOffset: Layout.swapUsed, as: UInt64.self)
+            base.storeBytes(of: s.diskFree.littleEndian, toByteOffset: Layout.diskFree, as: UInt64.self)
+            base.storeBytes(of: s.diskCapacity.littleEndian, toByteOffset: Layout.diskCapacity, as: UInt64.self)
+            base.storeBytes(of: s.activeAgents.littleEndian, toByteOffset: Layout.activeAgents, as: UInt16.self)
+            base.storeBytes(of: s.idleAgents.littleEndian, toByteOffset: Layout.idleAgents, as: UInt16.self)
+            base.storeBytes(of: seq.littleEndian, toByteOffset: Layout.seqEnd, as: UInt64.self)
+        }
+        let fd = open(tmpURL.path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o644)
+        guard fd >= 0 else { return false }
+        var written = -1
+        repeat {
+            written = buf.withUnsafeBytes { Foundation.write(fd, $0.baseAddress, Layout.size) }
+        } while written < 0 && errno == EINTR
         close(fd)
-    }
-
-    public func write(_ s: LiveSnapshot) {
-        let seq = base.loadUnaligned(fromByteOffset: Layout.seqBegin, as: UInt64.self).littleEndian &+ 1
-        base.storeBytes(of: seq.littleEndian, toByteOffset: Layout.seqBegin, as: UInt64.self)
-        atomicMemoryFence(ordering: .sequentiallyConsistent)
-        base.storeBytes(of: s.timestamp.bitPattern.littleEndian, toByteOffset: Layout.timestamp, as: UInt64.self)
-        base.storeBytes(of: s.cpuBusy.bitPattern.littleEndian, toByteOffset: Layout.cpuBusy, as: UInt32.self)
-        base.storeBytes(of: s.pressure, toByteOffset: Layout.pressure, as: UInt8.self)
-        base.storeBytes(of: s.thermal, toByteOffset: Layout.thermal, as: UInt8.self)
-        base.storeBytes(of: s.limitFlags, toByteOffset: Layout.limitFlags, as: UInt8.self)
-        base.storeBytes(of: s.memUsed.littleEndian, toByteOffset: Layout.memUsed, as: UInt64.self)
-        base.storeBytes(of: s.memTotal.littleEndian, toByteOffset: Layout.memTotal, as: UInt64.self)
-        base.storeBytes(of: s.swapUsed.littleEndian, toByteOffset: Layout.swapUsed, as: UInt64.self)
-        base.storeBytes(of: s.diskFree.littleEndian, toByteOffset: Layout.diskFree, as: UInt64.self)
-        base.storeBytes(of: s.diskCapacity.littleEndian, toByteOffset: Layout.diskCapacity, as: UInt64.self)
-        base.storeBytes(of: s.activeAgents.littleEndian, toByteOffset: Layout.activeAgents, as: UInt16.self)
-        base.storeBytes(of: s.idleAgents.littleEndian, toByteOffset: Layout.idleAgents, as: UInt16.self)
-        atomicMemoryFence(ordering: .sequentiallyConsistent)
-        base.storeBytes(of: seq.littleEndian, toByteOffset: Layout.seqEnd, as: UInt64.self)
+        guard written == Layout.size else { return false }
+        return rename(tmpURL.path, url.path) == 0
     }
 }
 
