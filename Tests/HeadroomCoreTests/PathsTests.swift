@@ -12,3 +12,9 @@ import Testing
     #expect(paths.tiers.lastPathComponent == "tiers.json")
     #expect(paths.baseline.lastPathComponent == "baseline.json")
 }
+
+@Test func pathsRootOverride() {
+    #expect(Paths.standard(environment: ["HEADROOM_ROOT": "/tmp/hr-x"]).root.path == "/tmp/hr-x")
+    #expect(Paths.standard(environment: ["HEADROOM_ROOT": ""]).root.lastPathComponent == "headroom")
+    #expect(Paths.standard(environment: [:]).root.path.hasSuffix("Library/Application Support/headroom"))
+}

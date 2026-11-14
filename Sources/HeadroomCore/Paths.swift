@@ -7,7 +7,11 @@ public struct Paths: Sendable {
         self.root = root
     }
 
-    public static func standard() -> Paths {
+    /// `HEADROOM_ROOT` relocates everything, so tests and smoke runs never touch the real data directory.
+    public static func standard(environment: [String: String] = ProcessInfo.processInfo.environment) -> Paths {
+        if let override = environment["HEADROOM_ROOT"], !override.isEmpty {
+            return Paths(root: URL(filePath: override, directoryHint: .isDirectory))
+        }
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return Paths(root: support.appending(path: "headroom"))
     }

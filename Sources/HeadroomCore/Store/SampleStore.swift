@@ -451,7 +451,8 @@ public final class SampleStore {
             s.bind(1, machineId)
             s.bind(2, ts)
         }
-        for (group, totals) in t.groups.sorted(by: { $0.key.rawValue < $1.key.rawValue }) where totals.procCount > 0 {
+        for (group, totals) in t.groups.sorted(by: { $0.key.rawValue < $1.key.rawValue })
+        where totals.procCount > 0 || totals.cpuSeconds > 0 {
             try step(insertGroup) { s in
                 s.bind(1, machineId)
                 s.bind(2, ts)

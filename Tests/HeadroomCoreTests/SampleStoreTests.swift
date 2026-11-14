@@ -86,6 +86,18 @@ private func run(_ pid: Int32, cpu: Double, footprint: UInt64, write: UInt64 = 0
 }
 
 @Suite struct SampleStoreTests {
+    // Unattributed CPU lands in .system even when no system process could be read, so the row must survive.
+    @Test func groupWithCPUButNoProcessesIsKept() throws {
+        let f = try Fixture()
+        f.store.append(tick(base, groups: [
+            .system: GroupTotals(cpuSeconds: 2.5, footprint: 0, diskWriteBytes: 0, procCount: 0),
+            .browsers: GroupTotals(cpuSeconds: 0, footprint: 0, diskWriteBytes: 0, procCount: 0),
+        ]))
+        try f.store.flush()
+        #expect(try f.int("SELECT COUNT(*) FROM group_samples") == 1)
+        #expect(try f.double("SELECT cpu_seconds FROM group_samples WHERE group_id='system'") == 2.5)
+    }
+
     @Test func flushWritesOneTransaction() throws {
         let f = try Fixture()
         let groups: [WorkloadGroup: GroupTotals] = [

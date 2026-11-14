@@ -36,6 +36,14 @@ public struct Classifier: Sendable {
     }
 
     public func classify(_ procs: [ProcessIdentity]) -> [ProcessKey: WorkloadGroup] {
+        classify(procs, ownGroup: ownGroup)
+    }
+
+    /// `ownGroup` lets a caller that sees the same processes every tick reuse their own groups, which depend
+    /// only on identity; matching every process against every rule each tick is most of the classifier's cost.
+    public func classify(
+        _ procs: [ProcessIdentity], ownGroup: (ProcessIdentity) -> WorkloadGroup?
+    ) -> [ProcessKey: WorkloadGroup] {
         var byPid: [Int32: ProcessIdentity] = [:]
         for p in procs { byPid[p.key.pid] = p }
         // Only rule-derived groups are memoized. The uid fallback applies to a process's own uid and must
