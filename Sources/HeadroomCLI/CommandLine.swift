@@ -211,7 +211,9 @@ func run(_ args: [String], out: (String) -> Void, err: (String) -> Void) -> Int3
         return 0
     case let .recordCommand(exe, seconds):
         return ShellHook.runRecordCommand(exe: exe, seconds: seconds)
-    case .top, .report:
+    case .top:
+        return TopCommand.run(paths: .standard(), out: out, err: err)
+    case .report:
         err("headroom: this command is not available in this build")
         return 1
     }
