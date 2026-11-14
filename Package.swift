@@ -17,7 +17,9 @@ let package = Package(
             linkerSettings: [.linkedLibrary("sqlite3"), .linkedFramework("IOKit")]
         ),
         .executableTarget(name: "headroomd", dependencies: ["HeadroomCore"], swiftSettings: swiftSettings),
-        .executableTarget(name: "headroom", dependencies: ["HeadroomCore"], swiftSettings: swiftSettings),
+        .target(name: "HeadroomCLI", dependencies: ["HeadroomCore"], swiftSettings: swiftSettings),
+        .executableTarget(name: "headroom", dependencies: ["HeadroomCLI"], swiftSettings: swiftSettings),
         .testTarget(name: "HeadroomCoreTests", dependencies: ["HeadroomCore"], swiftSettings: swiftSettings),
+        .testTarget(name: "HeadroomCLITests", dependencies: ["HeadroomCLI", "HeadroomCore"], swiftSettings: swiftSettings),
     ]
 )

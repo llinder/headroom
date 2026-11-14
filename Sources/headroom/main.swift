@@ -1,1 +1,4 @@
-print("headroom 0.1.0")
+import Foundation
+import HeadroomCLI
+
+exit(HeadroomCLI.run(CommandLine.arguments))
