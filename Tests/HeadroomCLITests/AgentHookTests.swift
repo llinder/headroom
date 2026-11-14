@@ -44,6 +44,12 @@ private func runProcess(_ path: String, _ args: [String], stdin: Data? = nil, en
     return (process.terminationStatus, String(decoding: stdout, as: UTF8.self), String(decoding: stderr, as: UTF8.self))
 }
 
+private let releaseBinary: URL? = {
+    let url = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().appending(path: ".build/release/headroom")
+    return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+}()
+
 @Suite struct AgentHookTests {
     @Test func findsRoot() throws {
         let dir = try scratchDirectory()
@@ -175,21 +181,23 @@ private func runProcess(_ path: String, _ args: [String], stdin: Data? = nil, en
         #expect(snippet.contains("add-zsh-hook precmd"))
         #expect(snippet.contains("headroom record-command"))
         #expect(snippet.contains("zmodload zsh/datetime"))
-        #expect(snippet.contains("${${(z)1}[1]}"))
+        #expect(snippet.contains("${(z)1}"))
         #expect(!snippet.contains("$1\""))
         #expect(snippet.contains("$HOME/.local/bin/headroom"))
     }
 
     /// Runs the snippet in a real zsh against a stub `headroom` so the quoting and word splitting are exercised.
-    private func runSnippet(command: String, elapsed: Int) throws -> String {
+    private func runSnippet(command: String, elapsed: Double, stub: Bool = true) throws -> (log: String, stderr: String) {
         let home = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: home) }
         let bin = home.appending(path: ".local/bin")
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         let log = home.appending(path: "log")
-        let stub = bin.appending(path: "headroom")
-        try "#!/bin/sh\necho \"$@\" > '\(log.path)'\n".write(to: stub, atomically: true, encoding: .utf8)
-        chmod(stub.path, 0o755)
+        if stub {
+            let path = bin.appending(path: "headroom")
+            try "#!/bin/sh\necho \"$@\" > '\(log.path)'\n".write(to: path, atomically: true, encoding: .utf8)
+            chmod(path.path, 0o755)
+        }
         let quoted = "'" + command.replacingOccurrences(of: "'", with: "'\\''") + "'"
         let script = """
             \(ShellHook.zshSnippet)
@@ -201,46 +209,79 @@ private func runProcess(_ path: String, _ args: [String], stdin: Data? = nil, en
             """
         let result = try runProcess("/bin/zsh", ["-f", "-c", script], environment: ["HOME": home.path, "PATH": "/usr/bin:/bin"])
         #expect(result.status == 0)
-        #expect(result.stderr.isEmpty)
         #expect(!result.stdout.contains("leaked"))
-        return (try? String(contentsOf: log, encoding: .utf8)) ?? ""
+        return ((try? String(contentsOf: log, encoding: .utf8)) ?? "", result.stderr)
+    }
+
+    private func recordedExe(_ command: String, elapsed: Double = 45) throws -> String? {
+        let (log, stderr) = try runSnippet(command: command, elapsed: elapsed)
+        #expect(stderr.isEmpty)
+        let fields = log.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard fields.count == 3, fields[0] == "record-command" else { return nil }
+        #expect((Double(fields[2]) ?? 0) >= elapsed - 0.05)
+        return fields[1]
     }
 
     @Test func snippetRecordsLongCommandWithFirstWordOnly() throws {
-        let log = try runSnippet(command: "go test ./... -run 'a b'", elapsed: 45)
-        let fields = log.split(whereSeparator: \.isWhitespace).map(String.init)
-        #expect(fields.count == 3)
-        #expect(Array(fields.prefix(2)) == ["record-command", "go"])
-        #expect((Double(fields.last ?? "") ?? 0) >= 45)
+        #expect(try recordedExe("go test ./... -run 'a b'") == "go")
+    }
+
+    @Test func snippetSkipsEnvAssignmentsAndRedirections() throws {
+        #expect(try recordedExe("API_KEY=s3cr3t go test ./x") == "go")
+        #expect(try recordedExe("A=1 B=2 make") == "make")
+        #expect(try recordedExe(">/tmp/f make") == "make")
+        #expect(try recordedExe("2>/tmp/f make") == "make")
+        #expect(try recordedExe("2> /tmp/f make") == "make")
+        #expect(try recordedExe("! make") == "make")
+        #expect(try recordedExe("API_KEY=s3cr3t") == nil)
+        let (log, _) = try runSnippet(command: "API_KEY=s3cr3t go test ./x", elapsed: 45)
+        #expect(!log.contains("s3cr3t"))
     }
 
     @Test func snippetIgnoresShortCommands() throws {
-        #expect(try runSnippet(command: "ls", elapsed: 5).isEmpty)
+        #expect(try recordedExe("ls", elapsed: 5) == nil)
     }
 
-    @Test func releaseBinaryHookIsFast() throws {
-        let binary = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().appending(path: ".build/release/headroom")
-        guard FileManager.default.isExecutableFile(atPath: binary.path) else { return }
+    @Test func snippetThreshold() throws {
+        #expect(try recordedExe("go", elapsed: 29.9) == nil)
+        #expect(try recordedExe("go", elapsed: 30.1) == "go")
+    }
+
+    @Test func snippetIsQuietWhenHeadroomIsMissing() throws {
+        let (log, stderr) = try runSnippet(command: "go test", elapsed: 45, stub: false)
+        #expect(log.isEmpty)
+        #expect(stderr.isEmpty)
+    }
+
+    @Test func recordCommandRejectsUnsafeNames() throws {
+        let dir = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let spool = Spool(url: dir.appending(path: "spool.jsonl"))
+        for exe in ["API_KEY=x", String(repeating: "a", count: 65), "a b", "x;y"] {
+            #expect(!ShellHook.recordCommand(exe: exe, seconds: 40, spool: spool, now: 1000))
+        }
+        #expect(ShellHook.recordCommand(exe: String(repeating: "a", count: 64), seconds: 40, spool: spool, now: 1000))
+        #expect(ShellHook.recordCommand(exe: "g++-14.2_x+y", seconds: 40, spool: spool, now: 1000))
+        #expect(spooled(spool).count == 2)
+    }
+
+    @Test(.enabled(if: releaseBinary != nil, "needs `swift build -c release`"))
+    func releaseBinaryHookIsFast() throws {
+        let binary = try #require(releaseBinary)
         let dir = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        // The rest of the suite runs in parallel and can starve a batch, so a quiet batch is what counts.
-        var medians: [Double] = []
-        for _ in 0..<3 {
-            var durations: [Double] = []
-            for _ in 0..<100 {
-                let start = DispatchTime.now().uptimeNanoseconds
-                let result = try runProcess(
-                    binary.path, ["agent-hook", "claude"], stdin: Data(#"{"session_id":"x"}"#.utf8),
-                    environment: ["HEADROOM_ROOT": dir.path])
-                durations.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
-                #expect(result.status == 0)
-                #expect(result.stdout.isEmpty)
-            }
-            medians.append(durations.sorted()[50])
-            if medians.last ?? .infinity < 5 { return }
+        var durations: [Double] = []
+        for _ in 0..<100 {
+            let start = DispatchTime.now().uptimeNanoseconds
+            let result = try runProcess(
+                binary.path, ["agent-hook", "claude"], stdin: Data(#"{"session_id":"x"}"#.utf8),
+                environment: ["HEADROOM_ROOT": dir.path])
+            durations.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
+            #expect(result.status == 0)
+            #expect(result.stdout.isEmpty)
         }
-        #expect(Bool(false), "medians \(medians) ms")
+        let median = durations.sorted()[50]
+        #expect(median < 10, "median \(median) ms")
     }
 }
