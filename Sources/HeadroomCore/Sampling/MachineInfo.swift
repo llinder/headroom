@@ -4,17 +4,31 @@ import Foundation
 import IOKit
 
 public struct MachineInfo: Sendable, Equatable, Codable {
-    public var model: String
+    public let model: String
     /// Display only; schema v1 has no column for it.
-    public var chip: String
-    public var serialHash: String
-    public var perfCores: Int
-    public var effCores: Int
-    public var ramBytes: UInt64
-    public var diskBytes: UInt64
+    public let chip: String
+    public let serialHash: String
+    public let perfCores: Int
+    public let effCores: Int
+    public let ramBytes: UInt64
+    public let diskBytes: UInt64
 
-    /// Computed once from the raw serial, which is never kept, so it is stored instead of derived.
-    public var machineId: String
+    // Derived from stored fields, never decoded, so it can't disagree with model/serialHash and a `machines`
+    // row can be turned back into a MachineInfo.
+    public var machineId: String { String(Self.sha256Hex(model + ":" + serialHash).prefix(16)) }
+
+    public init(
+        model: String, chip: String, serialHash: String, perfCores: Int, effCores: Int, ramBytes: UInt64,
+        diskBytes: UInt64
+    ) {
+        self.model = model
+        self.chip = chip
+        self.serialHash = serialHash
+        self.perfCores = perfCores
+        self.effCores = effCores
+        self.ramBytes = ramBytes
+        self.diskBytes = diskBytes
+    }
 
     public static func current() -> MachineInfo {
         let model = sysctlString("hw.model") ?? "unknown"
@@ -24,8 +38,7 @@ public struct MachineInfo: Sendable, Equatable, Codable {
         return MachineInfo(
             model: model, chip: sysctlString("machdep.cpu.brand_string") ?? "",
             serialHash: sha256Hex(serial), perfCores: perf, effCores: eff,
-            ramBytes: ProcessInfo.processInfo.physicalMemory, diskBytes: dataVolumeCapacity(),
-            machineId: String(sha256Hex(model + ":" + serial).prefix(16)))
+            ramBytes: ProcessInfo.processInfo.physicalMemory, diskBytes: dataVolumeCapacity())
     }
 
     public func register(in db: Database, now: Date) throws {
@@ -58,9 +71,9 @@ public struct MachineInfo: Sendable, Equatable, Codable {
     private static func sysctlString(_ name: String) -> String? {
         var size = 0
         guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return nil }
-        var buffer = [CChar](repeating: 0, count: size)
+        var buffer = [UInt8](repeating: 0, count: size)
         guard sysctlbyname(name, &buffer, &size, nil, 0) == 0 else { return nil }
-        return String(cString: buffer)
+        return String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
     }
 
     private static func sysctlInt(_ name: String) -> Int? {

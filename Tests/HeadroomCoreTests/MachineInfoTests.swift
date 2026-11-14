@@ -32,4 +32,22 @@ import Testing
         #expect(stmt.int64(3) == 2_000)
         #expect(try !stmt.step())
     }
+
+    private func sample(model: String = "Mac1,1", serialHash: String = "abc") -> MachineInfo {
+        MachineInfo(
+            model: model, chip: "", serialHash: serialHash, perfCores: 4, effCores: 4, ramBytes: 1, diskBytes: 1)
+    }
+
+    @Test func machineIdDerivedFromModelAndSerialHash() {
+        #expect(sample().machineId == sample().machineId)
+        #expect(sample().machineId != sample(model: "Mac2,1").machineId)
+        #expect(sample().machineId != sample(serialHash: "abd").machineId)
+    }
+
+    @Test func decodeRoundTripKeepsId() throws {
+        let info = MachineInfo.current()
+        let decoded = try JSONDecoder().decode(MachineInfo.self, from: JSONEncoder().encode(info))
+        #expect(decoded == info)
+        #expect(decoded.machineId == info.machineId)
+    }
 }
