@@ -442,6 +442,8 @@ private func run(_ pid: Int32, cpu: Double, footprint: UInt64, write: UInt64 = 0
         }
         try f.db.exec("INSERT INTO rollup VALUES('m', 3600, \(rolled), 'cpuBusy', 0.5, 0.9, 0.8)")
         try f.db.exec("INSERT INTO limit_seconds VALUES('m', 3600, \(rolled), 'cpuSaturated', 30)")
+        // Another machine's hourly row for the skipped hour must not release this machine's minute rows.
+        try f.db.exec("INSERT INTO rollup VALUES('other', 3600, \(skipped), 'cpuBusy', 0.5, 0.9, 0.8)")
         try f.store.applyRetention(now: Double(base))
         for table in ["rollup", "limit_seconds"] {
             #expect(try f.int("SELECT COUNT(*) FROM \(table) WHERE resolution=60 AND ts=\(rolled + 60)") == 0)
