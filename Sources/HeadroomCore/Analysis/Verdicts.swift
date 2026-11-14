@@ -73,7 +73,11 @@ public enum Verdicts {
         return Verdict(resource: "cpu", sentence: sentence, isProblem: typical > cpuProblemSeconds)
     }
 
-    public static func storage(capacity: UInt64, dailyFree: [(Date, UInt64)], now: Date, calendar: Calendar) -> Verdict {
+    /// `growthBytesPerDay` comes from `storageGrowthBytesPerDay` and is passed in, so the report computes it once and the
+    /// verdict and the spec recommendation can never disagree about whether a trend was measured.
+    public static func storage(
+        capacity: UInt64, dailyFree: [(Date, UInt64)], growthBytesPerDay: Double?, now: Date, calendar: Calendar
+    ) -> Verdict {
         guard let latest = dailyFree.max(by: { $0.0 < $1.0 }), capacity > 0 else {
             return Verdict(resource: "storage", sentence: "Storage use wasn't recorded.", isProblem: false)
         }
@@ -82,7 +86,7 @@ public enum Verdicts {
         let full = "Storage is \(Wording.percent(fullFraction)) full"
         let nearlyFull = fullFraction >= storageFullFraction
 
-        guard free > 0, let lossPerDay = storageGrowthBytesPerDay(dailyFree) else {
+        guard free > 0, let lossPerDay = growthBytesPerDay else {
             return Verdict(resource: "storage", sentence: "\(full).", isProblem: nearlyFull || free == 0)
         }
         guard lossPerDay * 7 >= minWeeklyGrowthBytes else {
@@ -140,7 +144,7 @@ public enum Verdicts {
 
     private static let noWorkdays = "No workdays recorded yet."
 
-    private static func median(_ values: [Double]) -> Double {
+    static func median(_ values: [Double]) -> Double {
         let sorted = values.sorted()
         guard !sorted.isEmpty else { return 0 }
         let mid = sorted.count / 2

@@ -45,14 +45,18 @@ public enum SpecRecommender {
     }
 
     /// The nearest-rank 95th percentile of daily peaks: a heavy day that recurs, not the single worst outlier.
-    private static func memory(_ peaks: [Double], _ current: Int?, _ tiers: [Int]) -> (Int, String) {
+    static func typicalHeavyDay(_ peaks: [Double]) -> Double? {
         let sorted = peaks.sorted()
-        guard !sorted.isEmpty else {
+        guard !sorted.isEmpty else { return nil }
+        return sorted[max(Int((0.95 * Double(sorted.count)).rounded(.up)), 1) - 1]
+    }
+
+    private static func memory(_ peaks: [Double], _ current: Int?, _ tiers: [Int]) -> (Int, String) {
+        guard let heavy = typicalHeavyDay(peaks) else {
             let fallback = current.map { c in tiers.first { $0 >= c } ?? c } ?? tiers.first ?? 0
             return (fallback, "Not enough data yet to size memory.")
         }
-        let rank = Int((0.95 * Double(sorted.count)).rounded(.up))
-        let p95GB = sorted[max(rank, 1) - 1] / bytesPerGiB
+        let p95GB = heavy / bytesPerGiB
         let peak = "Peak memory demand reached \(Wording.decimal(p95GB, places: 1)) GB on a typical heavy day"
         let needed = p95GB * memoryHeadroom
         guard let tier = tiers.first(where: { Double($0) >= needed }) else {

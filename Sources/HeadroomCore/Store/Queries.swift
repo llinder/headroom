@@ -67,6 +67,38 @@ public struct Queries {
         }
     }
 
+    public func mostRecentMachineId() throws(DatabaseError) -> String? {
+        try rows("SELECT machine_id FROM machines ORDER BY last_seen DESC LIMIT 1") { _ in
+        } read: { $0.string(0) }.first
+    }
+
+    /// Tags whose payload isn't the recorder's `{"text": …}` are skipped: a marker on a chart isn't worth failing
+    /// a report over.
+    public func tags(machineId: String, from: Date, to: Date) throws(DatabaseError) -> [(Date, String)] {
+        try rows(
+            "SELECT ts, payload FROM events WHERE machine_id=? AND kind='tag' AND ts>=? AND ts<? ORDER BY ts"
+        ) { s in bindRange(s, machineId, from, to) } read: { s -> (Date, String)? in
+            guard let payload = try? JSONDecoder().decode([String: String].self, from: Data(s.string(1).utf8)),
+                let text = payload["text"]
+            else { return nil }
+            return (Date(timeIntervalSince1970: s.double(0)), text)
+        }.compactMap { $0 }
+    }
+
+    /// Runs started in the range, and the CPU seconds every run used inside it.
+    public func agentRunTotals(machineId: String, from: Date, to: Date) throws(DatabaseError) -> (runs: Int, cpuSeconds: Double) {
+        let runs = try rows(
+            "SELECT COUNT(*) FROM agent_runs WHERE machine_id=? AND started>=? AND started<?"
+        ) { s in bindRange(s, machineId, from, to) } read: { Int($0.int64(0)) }.first ?? 0
+        let cpu = try rows(
+            """
+            SELECT COALESCE(SUM(u.cpu_seconds), 0) FROM run_usage u JOIN agent_runs r ON r.run_id = u.run_id
+            WHERE r.machine_id=? AND u.ts>=? AND u.ts<?
+            """
+        ) { s in bindRange(s, machineId, from, to) } read: { $0.double(0) }.first ?? 0
+        return (runs, cpu)
+    }
+
     /// Epoch seconds of the recorder's last flush.
     public func heartbeat() throws(DatabaseError) -> Double? {
         try rows("SELECT value FROM meta WHERE key='heartbeat'") { _ in

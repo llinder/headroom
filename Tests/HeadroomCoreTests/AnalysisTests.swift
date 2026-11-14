@@ -40,6 +40,12 @@ private func recommend(
 // rather than within a day of the February/March boundary.
 private let storageNow = Date(timeIntervalSince1970: 1_794_960_000)
 
+private func verdictForStorage(capacity: UInt64, dailyFree: [(Date, UInt64)], now: Date, calendar: Calendar) -> Verdict {
+    Verdicts.storage(
+        capacity: capacity, dailyFree: dailyFree, growthBytesPerDay: Verdicts.storageGrowthBytesPerDay(dailyFree),
+        now: now, calendar: calendar)
+}
+
 private func weeklyFree(_ lossPerWeek: UInt64, endingAt end: Date = storageNow) -> [(Date, UInt64)] {
     (0..<5).map { (w: Int) -> (Date, UInt64) in
         let weeksAgo = 4 - w
@@ -147,24 +153,24 @@ private func weeklyFree(_ lossPerWeek: UInt64, endingAt end: Date = storageNow) 
         let now = storageNow
         let weekly = { (loss: UInt64) in weeklyFree(loss) }
 
-        let growing = Verdicts.storage(capacity: 512_000_000_000, dailyFree: weekly(6_000_000_000), now: now, calendar: cal)
+        let growing = verdictForStorage(capacity: 512_000_000_000, dailyFree: weekly(6_000_000_000), now: now, calendar: cal)
         #expect(growing.sentence == "Storage is 82% full and growing 6 GB a week. It fills by March.")
         #expect(growing.isProblem)
 
-        let slow = Verdicts.storage(capacity: 512_000_000_000, dailyFree: weekly(1_330_000_000), now: now, calendar: cal)
+        let slow = verdictForStorage(capacity: 512_000_000_000, dailyFree: weekly(1_330_000_000), now: now, calendar: cal)
         #expect(slow.sentence == "Storage is 82% full and growing 1.3 GB a week. It fills by March 2028.")
         #expect(!slow.isProblem)
 
-        let distant = Verdicts.storage(capacity: 512_000_000_000, dailyFree: weekly(100_000_000), now: now, calendar: cal)
+        let distant = verdictForStorage(capacity: 512_000_000_000, dailyFree: weekly(100_000_000), now: now, calendar: cal)
         #expect(distant.sentence == "Storage is 82% full and growing 0.1 GB a week.")
 
-        let flat = Verdicts.storage(capacity: 512_000_000_000, dailyFree: weekly(0), now: now, calendar: cal)
+        let flat = verdictForStorage(capacity: 512_000_000_000, dailyFree: weekly(0), now: now, calendar: cal)
         #expect(flat.sentence == "Storage is 82% full and not growing.")
         #expect(!flat.isProblem)
     }
 
     @Test func storageNinetyPercentFullIsAProblem() {
-        let v = Verdicts.storage(
+        let v = verdictForStorage(
             capacity: 1_000_000_000_000, dailyFree: weeklyFree(0).map { ($0.0, 100_000_000_000) }, now: storageNow,
             calendar: utc())
         #expect(v.sentence == "Storage is 90% full and not growing.")
@@ -173,7 +179,7 @@ private func weeklyFree(_ lossPerWeek: UInt64, endingAt end: Date = storageNow) 
 
     @Test func storageUnderAWeekClaimsNoTrend() {
         let one = [(storageNow, UInt64(92_160_000_000))]
-        let v = Verdicts.storage(capacity: 512_000_000_000, dailyFree: one, now: storageNow, calendar: utc())
+        let v = verdictForStorage(capacity: 512_000_000_000, dailyFree: one, now: storageNow, calendar: utc())
         #expect(v.sentence == "Storage is 82% full.")
         #expect(!v.isProblem)
         #expect(Verdicts.storageGrowthBytesPerDay(one) == nil)
@@ -181,7 +187,7 @@ private func weeklyFree(_ lossPerWeek: UInt64, endingAt end: Date = storageNow) 
         let threeDays = (0..<4).map { (d: Int) -> (Date, UInt64) in
             (storageNow.addingTimeInterval(-Double(3 - d) * 86_400), 92_160_000_000 + UInt64(3 - d) * 5_000_000_000)
         }
-        let short = Verdicts.storage(capacity: 512_000_000_000, dailyFree: threeDays, now: storageNow, calendar: utc())
+        let short = verdictForStorage(capacity: 512_000_000_000, dailyFree: threeDays, now: storageNow, calendar: utc())
         #expect(short.sentence == "Storage is 82% full.")
         #expect(Verdicts.storageGrowthBytesPerDay(threeDays) == nil)
         #expect(Verdicts.storageGrowthBytesPerDay(weeklyFree(7_000_000_000)) == 1_000_000_000)
@@ -189,7 +195,7 @@ private func weeklyFree(_ lossPerWeek: UInt64, endingAt end: Date = storageNow) 
 
     @Test func storageFullSaysOnlyFull() {
         let full = weeklyFree(6_000_000_000).map { ($0.0, $0.1 - 92_160_000_000) }
-        let v = Verdicts.storage(capacity: 512_000_000_000, dailyFree: full, now: storageNow, calendar: utc())
+        let v = verdictForStorage(capacity: 512_000_000_000, dailyFree: full, now: storageNow, calendar: utc())
         #expect(v.sentence == "Storage is 100% full.")
         #expect(v.isProblem)
     }
@@ -197,12 +203,12 @@ private func weeklyFree(_ lossPerWeek: UInt64, endingAt end: Date = storageNow) 
     @Test func storageFillProjectsFromLatestPoint() {
         // The newest reading is five weeks old: 107.5 days on from 2026-10-14 is late January, not March.
         let stale = weeklyFree(6_000_000_000, endingAt: storageNow.addingTimeInterval(-35 * 86_400))
-        let v = Verdicts.storage(capacity: 512_000_000_000, dailyFree: stale, now: storageNow, calendar: utc())
+        let v = verdictForStorage(capacity: 512_000_000_000, dailyFree: stale, now: storageNow, calendar: utc())
         #expect(v.sentence == "Storage is 82% full and growing 6 GB a week. It fills by January.")
     }
 
     @Test func storageFillElevenMonthsOutNamesTheYear() {
-        let v = Verdicts.storage(
+        let v = verdictForStorage(
             capacity: 512_000_000_000, dailyFree: weeklyFree(1_840_000_000), now: storageNow, calendar: utc())
         #expect(v.sentence == "Storage is 82% full and growing 1.8 GB a week. It fills by November 2027.")
         #expect(v.isProblem)

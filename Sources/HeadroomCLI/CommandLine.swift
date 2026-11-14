@@ -183,7 +183,7 @@ func run(_ args: [String], out: (String) -> Void, err: (String) -> Void) -> Int3
     case let .tag(text):
         return Tag.run(text: text, paths: .standard(), now: Date(), out: out, err: err)
     case .version:
-        out("headroom 0.1.0")
+        out("headroom \(HeadroomVersion.current)")
         return 0
     case .help:
         out(usageText)
@@ -213,8 +213,8 @@ func run(_ args: [String], out: (String) -> Void, err: (String) -> Void) -> Int3
         return ShellHook.runRecordCommand(exe: exe, seconds: seconds)
     case .top:
         return TopCommand.run(paths: .standard(), out: out, err: err)
-    case .report:
-        err("headroom: this command is not available in this build")
-        return 1
+    case let .report(since, until, machine, file):
+        return Report.run(
+            since: since, until: until, machine: machine, file: file, paths: .standard(), now: Date(), out: out, err: err)
     }
 }
