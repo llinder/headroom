@@ -22,15 +22,11 @@ public final class Database {
             throw .open(message)
         }
         handle = raw
-        do {
-            try exec("PRAGMA busy_timeout=50")
-            if !readOnly {
-                try exec("PRAGMA journal_mode=WAL")
-                try exec("PRAGMA synchronous=NORMAL")
-            }
-        } catch {
-            sqlite3_close(raw)
-            throw error
+        // handle is already assigned, so deinit closes the connection if a PRAGMA throws.
+        try exec("PRAGMA busy_timeout=50")
+        if !readOnly {
+            try exec("PRAGMA journal_mode=WAL")
+            try exec("PRAGMA synchronous=NORMAL")
         }
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import HeadroomCore
 
@@ -37,6 +38,30 @@ private func column(_ db: Database, _ sql: String) throws(DatabaseError) -> [Str
         try Schema.migrate(db)
         try Schema.migrate(db)
         #expect(try column(db, "SELECT value FROM meta WHERE key='schema_version'") == ["1"])
+    }
+
+    @Test func concurrentMigrationsOnSameFileBothSucceed() throws {
+        for _ in 0..<5 {
+            let path = tempDBPath()
+            defer { try? FileManager.default.removeItem(atPath: path) }
+            let failures = Mutex<[String]>([])
+            let versions = Mutex<[String]>([])
+            // Opened up front so the race is in migrate, not in the WAL pragma on first open.
+            let dbs = try [Database(path: path, readOnly: false), Database(path: path, readOnly: false)]
+            let handles = Mutex(dbs)
+            DispatchQueue.concurrentPerform(iterations: 2) { i in
+                do {
+                    let db = handles.withLock { $0[i] }
+                    try Schema.migrate(db)
+                    let v = try column(db, "SELECT value FROM meta WHERE key='schema_version'")
+                    versions.withLock { $0 += v }
+                } catch {
+                    failures.withLock { $0.append("\(error)") }
+                }
+            }
+            #expect(failures.withLock { $0 } == [])
+            #expect(versions.withLock { $0 } == ["1", "1"])
+        }
     }
 
     @Test func readOnlyRejectsWrites() throws {

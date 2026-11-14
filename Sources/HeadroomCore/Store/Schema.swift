@@ -77,10 +77,11 @@ public enum Schema {
     ]
 
     public static func migrate(_ db: Database) throws {
-        try db.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
-        let current = try storedVersion(db)
-        guard current < migrations.count else { return }
+        // The version is read under the write lock so a concurrent migrator that lost the race sees the winner's result.
         try db.transaction {
+            try db.exec("CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)")
+            let current = try storedVersion(db)
+            guard current < migrations.count else { return }
             for index in current..<migrations.count {
                 try db.exec(migrations[index])
             }
