@@ -83,24 +83,37 @@ public struct MemoryReading: Sendable, Equatable {
 
 public struct MemorySampler {
     private var previous: VMCounters?
+    private let pageSize: UInt64
 
-    public init() {}
+    public init() {
+        pageSize = Self.kernelPageSize()
+    }
 
-    public mutating func sample() -> MemoryReading {
-        let counters = Self.readCounters()
-        defer { previous = counters }
-        let swap = Self.readSwap()
-        let level = Self.sysctlInt32("kern.memorystatus_level")
-        return Self.reading(
-            previous: previous,
-            current: counters ?? Self.emptyCounters,
-            pageSize: Self.kernelPageSize(),
-            total: ProcessInfo.processInfo.physicalMemory,
+    /// Nil when the VM counters or swap usage can't be read, so a failure never looks like real zero usage.
+    public mutating func sample() -> MemoryReading? {
+        record(
+            counters: Self.readCounters(),
+            swap: Self.readSwap(),
             pressure: Self.sysctlInt32("kern.memorystatus_vm_pressure_level")
                 .flatMap { PressureLevel(rawValue: Int($0)) } ?? .normal,
-            memorystatusLevel: level.map(Int.init),
-            swapUsed: swap.used,
-            swapTotal: swap.total)
+            memorystatusLevel: Self.sysctlInt32("kern.memorystatus_level").map(Int.init))
+    }
+
+    // Split from sample() so the failure path is testable without the kernel; a failed read clears
+    // `previous` so the next good sample reports zero deltas instead of a spike.
+    mutating func record(
+        counters: VMCounters?, swap: (used: UInt64, total: UInt64)?, pressure: PressureLevel,
+        memorystatusLevel: Int?
+    ) -> MemoryReading? {
+        guard let counters, let swap else {
+            previous = nil
+            return nil
+        }
+        defer { previous = counters }
+        return Self.reading(
+            previous: previous, current: counters, pageSize: pageSize,
+            total: ProcessInfo.processInfo.physicalMemory, pressure: pressure,
+            memorystatusLevel: memorystatusLevel, swapUsed: swap.used, swapTotal: swap.total)
     }
 
     /// App = (internal − purgeable) pages; used = app + wired + compressed, matching Activity Monitor.
@@ -132,10 +145,6 @@ public struct MemorySampler {
             pageins: delta(\.pageins),
             pageouts: delta(\.pageouts))
     }
-
-    private static let emptyCounters = VMCounters(
-        free: 0, active: 0, inactive: 0, wired: 0, compressed: 0, purgeable: 0, external: 0,
-        internalPages: 0, swapins: 0, swapouts: 0, pageins: 0, pageouts: 0)
 
     private static func readCounters() -> VMCounters? {
         var stats = vm_statistics64()
@@ -173,10 +182,10 @@ public struct MemorySampler {
         return UInt64(size)
     }
 
-    private static func readSwap() -> (used: UInt64, total: UInt64) {
+    private static func readSwap() -> (used: UInt64, total: UInt64)? {
         var usage = xsw_usage()
         var size = MemoryLayout<xsw_usage>.size
-        guard sysctlbyname("vm.swapusage", &usage, &size, nil, 0) == 0 else { return (0, 0) }
+        guard sysctlbyname("vm.swapusage", &usage, &size, nil, 0) == 0 else { return nil }
         return (usage.xsu_used, usage.xsu_total)
     }
 

@@ -44,9 +44,27 @@ import Testing
 
     @Test func liveSmoke() {
         var sampler = MemorySampler()
-        let result = sampler.sample()
+        guard let result = sampler.sample() else {
+            Issue.record("live memory read failed")
+            return
+        }
         #expect(result.total == ProcessInfo.processInfo.physicalMemory)
         #expect(result.swapTotal >= result.swapUsed)
         #expect([PressureLevel.normal, .warn, .critical].contains(result.pressure))
+    }
+
+    @Test func failedReadReturnsNilAndNextSampleHasZeroDeltas() {
+        var sampler = MemorySampler()
+        let swap = (used: UInt64(0), total: UInt64(0))
+        let first = sampler.record(
+            counters: counters(swapouts: 10), swap: swap, pressure: .normal, memorystatusLevel: nil)
+        #expect(first?.swapouts == 0)
+        #expect(sampler.record(counters: nil, swap: swap, pressure: .normal, memorystatusLevel: nil) == nil)
+        #expect(
+            sampler.record(counters: counters(swapouts: 500), swap: nil, pressure: .normal, memorystatusLevel: nil)
+                == nil)
+        let next = sampler.record(
+            counters: counters(swapouts: 900), swap: swap, pressure: .normal, memorystatusLevel: nil)
+        #expect(next?.swapouts == 0)
     }
 }
