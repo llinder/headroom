@@ -201,7 +201,13 @@ func run(_ args: [String], out: (String) -> Void, err: (String) -> Void) -> Int3
         return Install.uninstall(
             home: FileManager.default.homeDirectoryForCurrentUser, dataDirectory: Paths.standard().root, uid: getuid(),
             now: Date(), launchctl: Install.launchctl, out: out, err: err)
-    case .top, .report, .statusline, .agentHook, .hookZsh, .recordCommand:
+    case let .statusline(format, color, quiet):
+        let line = StatusLineFormatter.format(
+            LiveStateReader.read(url: Paths.standard().liveState), now: Date().timeIntervalSince1970,
+            template: format ?? StatusLineFormatter.defaultTemplate, color: color, quiet: quiet)
+        out(line)
+        return 0
+    case .top, .report, .agentHook, .hookZsh, .recordCommand:
         err("headroom: this command is not available in this build")
         return 1
     }
