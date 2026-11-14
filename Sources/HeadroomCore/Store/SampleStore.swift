@@ -172,6 +172,7 @@ public final class SampleStore {
     private let insertRun: Statement
     private let lowerRunStart: Statement
     private let endRun: Statement
+    private let reopenRun: Statement
     private let selectRunId: Statement
     private let insertSession: Statement
     private let upsertRunUsage: Statement
@@ -228,6 +229,9 @@ public final class SampleStore {
             """)
         endRun = try db.prepare("""
             UPDATE agent_runs SET ended=? WHERE machine_id=? AND root_pid=? AND root_start=? AND ended IS NULL
+            """)
+        reopenRun = try db.prepare("""
+            UPDATE agent_runs SET ended=NULL WHERE machine_id=? AND root_pid=? AND root_start=? AND ended IS NOT NULL
             """)
         selectRunId = try db.prepare("SELECT run_id FROM agent_runs WHERE machine_id=? AND root_pid=? AND root_start=?")
         insertSession = try db.prepare("""
@@ -480,8 +484,15 @@ public final class SampleStore {
         }
         // Live runs are upserted, not only started ones, so a run whose start tick was dropped from a
         // full buffer still gets a row and its usage.
+        // A run seen alive is open, whatever an earlier orphan close decided. Only the process sweep proves
+        // that: a hook's session record can arrive for a run that has already ended.
         for run in t.agents.live {
             try ensureRun(root: run.root, tool: run.tool.rawValue, started: Self.seconds(run.started))
+            try step(reopenRun) { s in
+                s.bind(1, machineId)
+                s.bind(2, Int64(run.root.pid))
+                s.bind(3, Self.rootStart(run.root))
+            }
         }
         for key in t.agents.ended {
             try step(endRun) { s in

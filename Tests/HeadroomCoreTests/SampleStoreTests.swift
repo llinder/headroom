@@ -319,6 +319,28 @@ private func run(_ pid: Int32, cpu: Double, footprint: UInt64, write: UInt64 = 0
         #expect(ended == [["1", "1320"], ["2", "5000"], ["3", "1500"], ["4", "open"]])
     }
 
+    // A recorder-only restart closes runs that are in fact still alive; the next live tick must reopen them,
+    // or the real end is blocked forever.
+    @Test func liveRunReopensAfterOrphanClose() throws {
+        let f = try Fixture()
+        let a = run(100, cpu: 2, footprint: 500)
+        f.store.append(tick(base, agents: AgentUpdate(started: [a], ended: [], live: [a], activeCount: 1, idleCount: 0)))
+        try f.store.flush()
+        let ended = "SELECT COALESCE(ended, -1) FROM agent_runs"
+
+        try f.store.closeOrphanRuns(machineId: machine, fallbackEnd: Double(base + 30))
+        #expect(try f.int(ended) == base + 60)
+
+        f.store.append(tick(base + 3600, agents: AgentUpdate(started: [a], ended: [], live: [a], activeCount: 1, idleCount: 0)))
+        try f.store.flush()
+        #expect(try f.int(ended) == -1)
+
+        f.store.append(tick(base + 3700, agents: AgentUpdate(started: [], ended: [a.root], live: [], activeCount: 0, idleCount: 0)))
+        try f.store.flush()
+        #expect(try f.int(ended) == base + 3700)
+        #expect(try f.int("SELECT COUNT(*) FROM agent_runs") == 1)
+    }
+
     @Test func retentionDeletesOnlyRawTables() throws {
         let f = try Fixture()
         let old = base - 31 * 86_400
