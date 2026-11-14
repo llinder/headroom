@@ -29,11 +29,23 @@ private func tempFile(_ text: String?) throws -> URL {
 
 private func recommend(
     peaks: [Double] = [30 * gib], medianSaturated: Double = 0, cores: Int = 8,
-    used: UInt64 = 400_000_000_000, growthPerDay: Double = 1e9
+    used: UInt64 = 400_000_000_000, growthPerDay: Double? = 1e9
 ) -> SpecRecommendation {
     SpecRecommender.recommend(
         dailyPeakMemoryBytes: peaks, medianSaturatedSeconds: medianSaturated, currentCores: cores,
         usedBytes: used, growthBytesPerDay: growthPerDay, tiers: .defaults)
+}
+
+// 2026-11-18 00:00 UTC: four days past the brief's 2026-11-14, so the 6 GB a week fixture fills on March 5
+// rather than within a day of the February/March boundary.
+private let storageNow = Date(timeIntervalSince1970: 1_794_960_000)
+
+private func weeklyFree(_ lossPerWeek: UInt64, endingAt end: Date = storageNow) -> [(Date, UInt64)] {
+    (0..<5).map { (w: Int) -> (Date, UInt64) in
+        let weeksAgo = 4 - w
+        let when = end.addingTimeInterval(-Double(weeksAgo) * 7 * 86_400)
+        return (when, 92_160_000_000 + UInt64(weeksAgo) * lossPerWeek)
+    }
 }
 
 @Suite struct AnalysisTests {
@@ -105,6 +117,12 @@ private func recommend(
         #expect(v.sentence == "Memory ran out on 1 of 2 workdays, an average of 0.1 hours a day.")
     }
 
+    @Test func memoryVerdictTinyAverageSaysUnder() {
+        let v = Verdicts.memory(limitedByDay: [day(0): 900], workdays: days(22), minSeconds: 900)
+        #expect(v.sentence == "Memory ran out on 1 of 22 workdays, for under 0.1 hours a day on average.")
+        #expect(v.isProblem)
+    }
+
     @Test func cpuVerdict() {
         let workdays = days(5)
         let busy: [String: Double] = [day(0): 7000, day(1): 5040, day(2): 6000, day(3): 100]
@@ -119,20 +137,15 @@ private func recommend(
 
     @Test func cpuVerdictProblemFromHalfHour() {
         let v = Verdicts.cpu(saturatedByDay: [day(0): 1800], workdays: days(1))
-        #expect(v.isProblem)
+        #expect(!v.isProblem)
         #expect(v.sentence == "The processor was fully busy for 0.5 hours on a typical workday.")
+        #expect(Verdicts.cpu(saturatedByDay: [day(0): 1801], workdays: days(1)).isProblem)
     }
 
     @Test func storageVerdict() {
         let cal = utc()
-        let now = Date(timeIntervalSince1970: 1_794_614_400)  // 2026-11-14 00:00 UTC
-        func weekly(_ lossPerWeek: UInt64) -> [(Date, UInt64)] {
-            (0..<5).map { (w: Int) -> (Date, UInt64) in
-                let weeksAgo = 4 - w
-                let when = now.addingTimeInterval(-Double(weeksAgo) * 7 * 86_400)
-                return (when, 92_160_000_000 + UInt64(weeksAgo) * lossPerWeek)
-            }
-        }
+        let now = storageNow
+        let weekly = { (loss: UInt64) in weeklyFree(loss) }
 
         let growing = Verdicts.storage(capacity: 512_000_000_000, dailyFree: weekly(6_000_000_000), now: now, calendar: cal)
         #expect(growing.sentence == "Storage is 82% full and growing 6 GB a week. It fills by March.")
@@ -151,10 +164,47 @@ private func recommend(
     }
 
     @Test func storageNinetyPercentFullIsAProblem() {
-        let now = Date(timeIntervalSince1970: 1_794_614_400)
         let v = Verdicts.storage(
-            capacity: 1_000_000_000_000, dailyFree: [(now, 100_000_000_000)], now: now, calendar: utc())
+            capacity: 1_000_000_000_000, dailyFree: weeklyFree(0).map { ($0.0, 100_000_000_000) }, now: storageNow,
+            calendar: utc())
         #expect(v.sentence == "Storage is 90% full and not growing.")
+        #expect(v.isProblem)
+    }
+
+    @Test func storageUnderAWeekClaimsNoTrend() {
+        let one = [(storageNow, UInt64(92_160_000_000))]
+        let v = Verdicts.storage(capacity: 512_000_000_000, dailyFree: one, now: storageNow, calendar: utc())
+        #expect(v.sentence == "Storage is 82% full.")
+        #expect(!v.isProblem)
+        #expect(Verdicts.storageGrowthBytesPerDay(one) == nil)
+
+        let threeDays = (0..<4).map { (d: Int) -> (Date, UInt64) in
+            (storageNow.addingTimeInterval(-Double(3 - d) * 86_400), 92_160_000_000 + UInt64(3 - d) * 5_000_000_000)
+        }
+        let short = Verdicts.storage(capacity: 512_000_000_000, dailyFree: threeDays, now: storageNow, calendar: utc())
+        #expect(short.sentence == "Storage is 82% full.")
+        #expect(Verdicts.storageGrowthBytesPerDay(threeDays) == nil)
+        #expect(Verdicts.storageGrowthBytesPerDay(weeklyFree(7_000_000_000)) == 1_000_000_000)
+    }
+
+    @Test func storageFullSaysOnlyFull() {
+        let full = weeklyFree(6_000_000_000).map { ($0.0, $0.1 - 92_160_000_000) }
+        let v = Verdicts.storage(capacity: 512_000_000_000, dailyFree: full, now: storageNow, calendar: utc())
+        #expect(v.sentence == "Storage is 100% full.")
+        #expect(v.isProblem)
+    }
+
+    @Test func storageFillProjectsFromLatestPoint() {
+        // The newest reading is five weeks old: 107.5 days on from 2026-10-14 is late January, not March.
+        let stale = weeklyFree(6_000_000_000, endingAt: storageNow.addingTimeInterval(-35 * 86_400))
+        let v = Verdicts.storage(capacity: 512_000_000_000, dailyFree: stale, now: storageNow, calendar: utc())
+        #expect(v.sentence == "Storage is 82% full and growing 6 GB a week. It fills by January.")
+    }
+
+    @Test func storageFillElevenMonthsOutNamesTheYear() {
+        let v = Verdicts.storage(
+            capacity: 512_000_000_000, dailyFree: weeklyFree(1_840_000_000), now: storageNow, calendar: utc())
+        #expect(v.sentence == "Storage is 82% full and growing 1.8 GB a week. It fills by November 2027.")
         #expect(v.isProblem)
     }
 
@@ -212,7 +262,7 @@ private func recommend(
                 == "This machine handles 1 AI agent at once. With 2 the processor is fully busy 12.5% of the time.")
         #expect(
             AgentCapacity.sentence(.capacity(n: 2, next: nil))
-                == "This machine handles 2 AI agents at once. More than 2 hasn't been recorded long enough to measure.")
+                == "This machine handles 2 AI agents at once. Running more than 2 at once hasn't been recorded long enough to measure.")
         #expect(
             AgentCapacity.sentence(.limitedAtOne(resource: .cpu, share: 0.3))
                 == "This machine runs short of processor time even with a single AI agent (limited 30% of the time).")
@@ -237,6 +287,18 @@ private func recommend(
         #expect(r.reasons[0].contains("exceeds the largest configuration"))
     }
 
+    @Test func specMemoryWithoutDataKeepsCurrentTier() {
+        let current = SpecRecommender.recommend(
+            dailyPeakMemoryBytes: [], medianSaturatedSeconds: 0, currentCores: 8, currentMemoryGB: 36,
+            usedBytes: 400_000_000_000, growthBytesPerDay: 0, tiers: .defaults)
+        #expect(current.memoryGB == 36)
+        #expect(current.reasons[0] == "Not enough data yet to size memory.")
+
+        let unknown = recommend(peaks: [])
+        #expect(unknown.memoryGB == 16)
+        #expect(unknown.reasons[0] == "Not enough data yet to size memory.")
+    }
+
     @Test func specCores() {
         let busy = recommend(medianSaturated: 2400, cores: 8)
         #expect(busy.cores == 10)
@@ -246,6 +308,10 @@ private func recommend(
         #expect(quiet.cores == nil)
         #expect(quiet.headline == "Recommended: 48 GB memory, 1 TB storage")
 
+        let halfHour = recommend(medianSaturated: 1800, cores: 8)
+        #expect(halfHour.cores == nil)
+        #expect(!halfHour.headline.contains("cores"))
+
         let maxed = recommend(medianSaturated: 2400, cores: 16)
         #expect(maxed.cores == 16)
         #expect(maxed.reasons[1].contains("exceeds the largest configuration"))
@@ -253,11 +319,17 @@ private func recommend(
 
     @Test func specStorage() {
         let r = recommend(used: 400_000_000_000, growthPerDay: 1e9)
-        #expect(r.storageGB == 1024)
+        #expect(r.storageGB == 1000)
         #expect(r.headline.hasSuffix("1 TB storage"))
         #expect(
             r.reasons[2]
                 == "Storage holds 400 GB and grows 1.0 GB a day; a year of growth plus 20% needs 918 GB, so 1 TB.")
+
+        let unmeasured = recommend(used: 400_000_000_000, growthPerDay: nil)
+        #expect(unmeasured.storageGB == 512)
+        #expect(
+            unmeasured.reasons[2]
+                == "Storage holds 400 GB, growth not yet measured; that plus 20% needs 480 GB, so 512 GB.")
 
         #expect(recommend(used: 300_000_000_000, growthPerDay: -5e9).storageGB == 512)
         #expect(recommend(used: 300_000_000_000, growthPerDay: -5e9).headline.hasSuffix("512 GB storage"))
@@ -283,7 +355,7 @@ private func recommend(
         #expect(missing.warning == nil)
         #expect(Tiers.defaults.memoryGB == [16, 24, 32, 36, 48, 64, 96, 128])
         #expect(Tiers.defaults.cores == [8, 10, 12, 14, 16])
-        #expect(Tiers.defaults.storageGB == [512, 1024, 2048, 4096, 8192])
+        #expect(Tiers.defaults.storageGB == [512, 1000, 2000, 4000, 8000])
     }
 
     @Test func badBaselineIgnored() throws {

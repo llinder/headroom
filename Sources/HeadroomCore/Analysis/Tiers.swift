@@ -15,7 +15,7 @@ public struct Tiers: Codable, Sendable, Equatable {
 
     public static let defaults = Tiers(
         memoryGB: [16, 24, 32, 36, 48, 64, 96, 128], cores: [8, 10, 12, 14, 16],
-        storageGB: [512, 1024, 2048, 4096, 8192])
+        storageGB: [512, 1000, 2000, 4000, 8000])
 
     /// A missing file is the normal state, so it yields the defaults without a warning.
     public static func load(from url: URL) -> (Tiers, warning: String?) {

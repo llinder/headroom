@@ -44,6 +44,7 @@ public enum Verdicts {
     private static let storageFullFraction = 0.9
     // Below this the weekly figure rounds to "0 GB", so the drive isn't described as growing.
     private static let minWeeklyGrowthBytes = 50_000_000.0
+    private static let minTrendSpan = 7.0 * 86_400
 
     public static func memory(limitedByDay: [String: Double], workdays: [String], minSeconds: Double) -> Verdict {
         guard !workdays.isEmpty else { return Verdict(resource: "memory", sentence: noWorkdays, isProblem: false) }
@@ -54,10 +55,11 @@ public enum Verdicts {
             return Verdict(resource: "memory", sentence: "Memory never ran out in \(total).", isProblem: false)
         }
         let average = limited.reduce(0, +) / Double(workdays.count)
-        return Verdict(
-            resource: "memory",
-            sentence: "Memory ran out on \(days) of \(total), an average of \(Wording.hours(average)) hours a day.",
-            isProblem: true)
+        // An average that rounds to "0.0 hours" would contradict "ran out".
+        let howLong =
+            average < 180
+            ? "for under 0.1 hours a day on average" : "an average of \(Wording.hours(average)) hours a day"
+        return Verdict(resource: "memory", sentence: "Memory ran out on \(days) of \(total), \(howLong).", isProblem: true)
     }
 
     /// Days without a saturated row count as zero, so the median is over every workday.
@@ -68,14 +70,11 @@ public enum Verdicts {
             typical < cpuRarelySeconds
             ? "The processor was rarely fully busy."
             : "The processor was fully busy for \(Wording.hours(typical)) hours on a typical workday."
-        return Verdict(resource: "cpu", sentence: sentence, isProblem: typical >= cpuProblemSeconds)
+        return Verdict(resource: "cpu", sentence: sentence, isProblem: typical > cpuProblemSeconds)
     }
 
-    /// Growth is the least-squares slope of free space over the range, so one large download or cleanup
-    /// doesn't swing the projection the way a first-to-last difference would.
     public static func storage(capacity: UInt64, dailyFree: [(Date, UInt64)], now: Date, calendar: Calendar) -> Verdict {
-        let points = dailyFree.sorted { $0.0 < $1.0 }
-        guard let latest = points.last, capacity > 0 else {
+        guard let latest = dailyFree.max(by: { $0.0 < $1.0 }), capacity > 0 else {
             return Verdict(resource: "storage", sentence: "Storage use wasn't recorded.", isProblem: false)
         }
         let free = Double(min(latest.1, capacity))
@@ -83,25 +82,49 @@ public enum Verdicts {
         let full = "Storage is \(Wording.percent(fullFraction)) full"
         let nearlyFull = fullFraction >= storageFullFraction
 
-        let lossPerDay = -slopePerDay(points)
+        guard free > 0, let lossPerDay = storageGrowthBytesPerDay(dailyFree) else {
+            return Verdict(resource: "storage", sentence: "\(full).", isProblem: nearlyFull || free == 0)
+        }
         guard lossPerDay * 7 >= minWeeklyGrowthBytes else {
             return Verdict(resource: "storage", sentence: "\(full) and not growing.", isProblem: nearlyFull)
         }
         let growing = "\(full) and growing \(Wording.trimmed(lossPerDay * 7 / 1e9)) GB a week."
-        let fill = now.addingTimeInterval(free / lossPerDay * 86_400)
-        let inYear = calendar.date(byAdding: .month, value: 12, to: now) ?? now.addingTimeInterval(365 * 86_400)
-        let inTwoYears = calendar.date(byAdding: .month, value: 24, to: now) ?? now.addingTimeInterval(730 * 86_400)
-        let isProblem = nearlyFull || fill <= inYear
-        guard fill <= inTwoYears else { return Verdict(resource: "storage", sentence: growing, isProblem: isProblem) }
+        // The latest reading is where the projection starts; it can be older than `now`.
+        let fill = latest.0.addingTimeInterval(free / lossPerDay * 86_400)
+        let isProblem = nearlyFull || fill <= months(12, after: now, calendar)
+        guard fill <= months(24, after: now, calendar) else {
+            return Verdict(resource: "storage", sentence: growing, isProblem: isProblem)
+        }
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
-        // Within a year the month alone means the coming one; further out it needs the year to be unambiguous.
-        formatter.dateFormat = fill <= inYear ? "LLLL" : "LLLL yyyy"
+        // A bare month name reads as the coming one, so the year is added once that could be wrong: past 11
+        // months, or a later year's instance of the current month.
+        let sameMonthLaterYear =
+            calendar.component(.month, from: fill) == calendar.component(.month, from: now)
+            && calendar.component(.year, from: fill) > calendar.component(.year, from: now)
+        let needsYear = fill > months(11, after: now, calendar) || sameMonthLaterYear
+        formatter.dateFormat = needsYear ? "LLLL yyyy" : "LLLL"
         return Verdict(
             resource: "storage", sentence: "\(growing) It fills by \(formatter.string(from: fill)).", isProblem: isProblem)
+    }
+
+    /// Bytes of free space lost per day: the least-squares slope over the range, so one large download or
+    /// cleanup doesn't swing it the way a first-to-last difference would. Nil under a week of readings, which is
+    /// too short to tell a trend from day-to-day churn.
+    public static func storageGrowthBytesPerDay(_ dailyFree: [(Date, UInt64)]) -> Double? {
+        let points = dailyFree.sorted { $0.0 < $1.0 }
+        guard let first = points.first, let last = points.last,
+            last.0.timeIntervalSince(first.0) >= minTrendSpan
+        else { return nil }
+        let xs = points.map { $0.0.timeIntervalSince(first.0) / 86_400 }
+        let ys = points.map { Double($0.1) }
+        let meanX = xs.reduce(0, +) / Double(xs.count)
+        let meanY = ys.reduce(0, +) / Double(ys.count)
+        let spread = xs.reduce(0) { $0 + ($1 - meanX) * ($1 - meanX) }
+        return -zip(xs, ys).reduce(0) { $0 + ($1.0 - meanX) * ($1.1 - meanY) } / spread
     }
 
     /// "Continuously" is only claimed when gaps are under 1% of awake time.
@@ -124,14 +147,7 @@ public enum Verdicts {
         return sorted.count % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
     }
 
-    private static func slopePerDay(_ points: [(Date, UInt64)]) -> Double {
-        guard let first = points.first, points.count >= 2 else { return 0 }
-        let xs = points.map { $0.0.timeIntervalSince(first.0) / 86_400 }
-        let ys = points.map { Double($0.1) }
-        let meanX = xs.reduce(0, +) / Double(xs.count)
-        let meanY = ys.reduce(0, +) / Double(ys.count)
-        let spread = xs.reduce(0) { $0 + ($1 - meanX) * ($1 - meanX) }
-        guard spread > 0 else { return 0 }
-        return zip(xs, ys).reduce(0) { $0 + ($1.0 - meanX) * ($1.1 - meanY) } / spread
+    private static func months(_ n: Int, after date: Date, _ calendar: Calendar) -> Date {
+        calendar.date(byAdding: .month, value: n, to: date) ?? date.addingTimeInterval(Double(n) * 30.44 * 86_400)
     }
 }

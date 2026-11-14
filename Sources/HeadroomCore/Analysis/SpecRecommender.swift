@@ -24,11 +24,13 @@ public enum SpecRecommender {
     private static let bytesPerGiB = 1_073_741_824.0
     private static let exceeds = "exceeds the largest configuration"
 
+    /// `currentMemoryGB` is what memory falls back to when there are no daily peaks to size it from; without
+    /// it the smallest tier is used. A nil `growthBytesPerDay` means growth hasn't been measured yet.
     public static func recommend(
-        dailyPeakMemoryBytes: [Double], medianSaturatedSeconds: Double, currentCores: Int, usedBytes: UInt64,
-        growthBytesPerDay: Double, tiers: Tiers
+        dailyPeakMemoryBytes: [Double], medianSaturatedSeconds: Double, currentCores: Int, currentMemoryGB: Int? = nil,
+        usedBytes: UInt64, growthBytesPerDay: Double?, tiers: Tiers
     ) -> SpecRecommendation {
-        let (memoryGB, memoryReason) = memory(dailyPeakMemoryBytes, tiers.memoryGB.sorted())
+        let (memoryGB, memoryReason) = memory(dailyPeakMemoryBytes, currentMemoryGB, tiers.memoryGB.sorted())
         let (cores, coresReason) = cpu(medianSaturatedSeconds, currentCores, tiers.cores.sorted())
         let (storageGB, storageReason) = storage(usedBytes, growthBytesPerDay, tiers.storageGB.sorted())
         return SpecRecommendation(
@@ -43,10 +45,14 @@ public enum SpecRecommender {
     }
 
     /// The nearest-rank 95th percentile of daily peaks: a heavy day that recurs, not the single worst outlier.
-    private static func memory(_ peaks: [Double], _ tiers: [Int]) -> (Int, String) {
+    private static func memory(_ peaks: [Double], _ current: Int?, _ tiers: [Int]) -> (Int, String) {
         let sorted = peaks.sorted()
+        guard !sorted.isEmpty else {
+            let fallback = current.map { c in tiers.first { $0 >= c } ?? c } ?? tiers.first ?? 0
+            return (fallback, "Not enough data yet to size memory.")
+        }
         let rank = Int((0.95 * Double(sorted.count)).rounded(.up))
-        let p95GB = sorted.isEmpty ? 0 : sorted[max(rank, 1) - 1] / bytesPerGiB
+        let p95GB = sorted[max(rank, 1) - 1] / bytesPerGiB
         let peak = "Peak memory demand reached \(Wording.decimal(p95GB, places: 1)) GB on a typical heavy day"
         let needed = p95GB * memoryHeadroom
         guard let tier = tiers.first(where: { Double($0) >= needed }) else {
@@ -72,16 +78,20 @@ public enum SpecRecommender {
     }
 
     /// Shrinking usage is projected as flat: a recommendation shouldn't count on space being freed.
-    private static func storage(_ used: UInt64, _ growthPerDay: Double, _ tiers: [Int]) -> (Int, String) {
+    private static func storage(_ used: UInt64, _ growthPerDay: Double?, _ tiers: [Int]) -> (Int, String) {
         let usedGB = Double(used) / 1e9
-        let growthGB = max(growthPerDay, 0) / 1e9
+        let growthGB = max(growthPerDay ?? 0, 0) / 1e9
         let neededGB = (usedGB + 365 * growthGB) * storageHeadroom
         let needed = Wording.decimal(neededGB, places: 0)
         let holds = "Storage holds \(Wording.decimal(usedGB, places: 0)) GB"
         let trend =
-            growthGB > 0
-            ? "\(holds) and grows \(Wording.decimal(growthGB, places: 1)) GB a day; a year of growth plus 20% needs \(needed) GB"
-            : "\(holds) and isn't growing; that plus 20% needs \(needed) GB"
+            if growthPerDay == nil {
+                "\(holds), growth not yet measured; that plus 20% needs \(needed) GB"
+            } else if growthGB > 0 {
+                "\(holds) and grows \(Wording.decimal(growthGB, places: 1)) GB a day; a year of growth plus 20% needs \(needed) GB"
+            } else {
+                "\(holds) and isn't growing; that plus 20% needs \(needed) GB"
+            }
         guard let tier = tiers.first(where: { Double($0) >= neededGB }) else {
             let largest = tiers.last ?? 0
             return (largest, "\(trend), which \(exceeds), \(storageLabel(largest)).")

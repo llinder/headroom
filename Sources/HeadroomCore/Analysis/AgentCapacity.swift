@@ -54,7 +54,7 @@ public enum AgentCapacity {
             return "This machine runs short of \(what) even with a single AI agent (limited \(Wording.percent(share)) of the time)."
         case let .capacity(n, next):
             let handles = "This machine handles \(n) AI agent\(n == 1 ? "" : "s") at once."
-            guard let next else { return "\(handles) More than \(n) hasn't been recorded long enough to measure." }
+            guard let next else { return "\(handles) Running more than \(n) at once hasn't been recorded long enough to measure." }
             let effect = next.resource == .memory ? "it runs out of memory" : "the processor is fully busy"
             return "\(handles) With \(n + 1) \(effect) \(Wording.percent(next.share)) of the time."
         }
