@@ -45,6 +45,29 @@ private func render(_ s: LiveSnapshot?, color: Bool = false, quiet: Bool = false
         #expect(render(snapshot(), template: "{cpu} {nope}") == "cpu 71% {nope}")
     }
 
+    @Test func garbageSnapshotNeverTraps() {
+        for cpu in [Float.nan, .infinity, -.infinity, 1e30] {
+            #expect(!render(snapshot(cpu: cpu)).isEmpty)
+        }
+        var s = snapshot()
+        s.memTotal = 0
+        #expect(render(s).hasPrefix("mem 0%"))
+        s.memTotal = 1
+        s.memUsed = .max
+        #expect(!render(s).isEmpty)
+        s.swapUsed = .max
+        s.diskCapacity = 1
+        s.diskFree = .max
+        #expect(render(s).contains("disk 0G"))
+    }
+
+    @Test func fractionalValuesRound() {
+        var s = snapshot(mem: 0.826, swap: UInt64(13.6 * Double(1 << 30)))
+        s.diskCapacity = 1_000_000_000_000
+        s.diskFree = 1_000_000_000_000 - 417_600_000_000
+        #expect(render(s, template: "{mem} · {swap} · {disk}") == "mem 83% ⚠ · swap 14G · disk 418G")
+    }
+
     @Test func staleIsOff() {
         let old = snapshot(timestamp: now - 61)
         #expect(render(old) == "headroom: off")

@@ -202,10 +202,7 @@ func run(_ args: [String], out: (String) -> Void, err: (String) -> Void) -> Int3
             home: FileManager.default.homeDirectoryForCurrentUser, dataDirectory: Paths.standard().root, uid: getuid(),
             now: Date(), launchctl: Install.launchctl, out: out, err: err)
     case let .statusline(format, color, quiet):
-        let line = StatusLineFormatter.format(
-            LiveStateReader.read(url: Paths.standard().liveState), now: Date().timeIntervalSince1970,
-            template: format ?? StatusLineFormatter.defaultTemplate, color: color, quiet: quiet)
-        out(line)
+        out(StatusLine.render(template: format ?? StatusLineFormatter.defaultTemplate, color: color, quiet: quiet))
         return 0
     case .top, .report, .agentHook, .hookZsh, .recordCommand:
         err("headroom: this command is not available in this build")
