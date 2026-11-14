@@ -53,7 +53,7 @@ public struct AgentTracker {
         var cpu = 0.0
         var footprint: UInt64 = 0
         var write: UInt64 = 0
-        var hasNonAgent = false
+        var nonAgentCPU = 0.0
     }
 
     private let activeCoreFraction: Double
@@ -114,7 +114,7 @@ public struct AgentTracker {
             u.cpu += p.cpuSeconds
             u.footprint += p.footprint
             u.write += p.diskWriteBytes
-            if let g = groups[p.identity.key], g != .agents { u.hasNonAgent = true }
+            if let g = groups[p.identity.key], g != .agents { u.nonAgentCPU += p.cpuSeconds }
             usage[root] = u
         }
 
@@ -138,7 +138,7 @@ public struct AgentTracker {
             runs[key]?.ring = ring
             live.append(AgentRun(
                 root: key, tool: state.tool, started: state.started,
-                isActive: u.hasNonAgent || ring.reduce(0, +) >= threshold,
+                isActive: u.nonAgentCPU >= activeCoreFraction * sampleInterval || ring.reduce(0, +) >= threshold,
                 cpuSeconds: u.cpu, footprint: u.footprint, diskWriteBytes: u.write))
         }
         live.sort { ($0.started, $0.root.pid) < ($1.started, $1.root.pid) }

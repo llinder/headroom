@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import HeadroomCore
@@ -53,8 +54,36 @@ struct AgentTrackerTests {
     @Test func buildChildMakesActive() {
         var t = AgentTracker(activeCoreFraction: 0.05)
         let root = id(10, 1, "claude"), build = id(11, 10, "go")
-        let u = run(&t, [usage(root), usage(build)], groups: [build.key: .goBuilds, root.key: .agents])
+        let u = run(&t, [usage(root), usage(build, cpu: 1.0)], groups: [build.key: .goBuilds, root.key: .agents])
         #expect(u.live[0].isActive)
+    }
+
+    @Test func idleGoplsChildStaysIdle() {
+        var t = AgentTracker(activeCoreFraction: 0.05)
+        let root = id(10, 1, "claude"), lsp = id(11, 10, "gopls")
+        let u = run(&t, [usage(root), usage(lsp)], groups: [lsp.key: .goBuilds, root.key: .agents])
+        #expect(u.live[0].isActive == false)
+    }
+
+    @Test func decaysBackToIdle() {
+        var t = AgentTracker(activeCoreFraction: 0.05)
+        let root = id(10, 1, "claude")
+        var u = run(&t, [usage(root, cpu: 0.5)])
+        for i in 1..<6 { u = run(&t, [usage(root, cpu: 0.5)], now: Double(i * 10)) }
+        #expect(u.live[0].isActive)
+        for i in 6..<12 { u = run(&t, [usage(root)], now: Double(i * 10)) }
+        #expect(u.live[0].isActive == false)
+    }
+
+    @Test func realClassifierInheritedChildStaysIdle() {
+        var t = AgentTracker(activeCoreFraction: 0.05)
+        let classifier = Classifier(rules: .defaults, currentUID: getuid())
+        let root = ProcessIdentity(key: ProcessKey(pid: 10, start: 10), ppid: 1, uid: getuid(), name: "claude", path: "")
+        let mcp = ProcessIdentity(key: ProcessKey(pid: 11, start: 11), ppid: 10, uid: getuid(), name: "node", path: "")
+        let u = t.update(processes: [usage(root), usage(mcp, footprint: 5)], groups: classifier.classify([root, mcp]), ownGroup: classifier.ownGroup, now: 0)
+        #expect(u.live.count == 1)
+        #expect(u.live[0].isActive == false)
+        #expect(u.live[0].footprint == 5)
     }
 
     @Test func endsOnExit() {
