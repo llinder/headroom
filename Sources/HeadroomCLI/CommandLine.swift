@@ -204,7 +204,14 @@ func run(_ args: [String], out: (String) -> Void, err: (String) -> Void) -> Int3
     case let .statusline(format, color, quiet):
         out(StatusLine.render(template: format ?? StatusLineFormatter.defaultTemplate, color: color, quiet: quiet))
         return 0
-    case .top, .report, .agentHook, .hookZsh, .recordCommand:
+    case let .agentHook(tool):
+        return AgentHook.run(tool: tool)
+    case .hookZsh:
+        out(ShellHook.zshSnippet)
+        return 0
+    case let .recordCommand(exe, seconds):
+        return ShellHook.runRecordCommand(exe: exe, seconds: seconds)
+    case .top, .report:
         err("headroom: this command is not available in this build")
         return 1
     }

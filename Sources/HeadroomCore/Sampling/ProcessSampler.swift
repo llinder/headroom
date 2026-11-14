@@ -95,8 +95,8 @@ public struct ProcessSampler {
 
         for index in 0..<count {
             let pid = pids[index]
-            guard pid > 0, let bsd = bsdInfo(pid) else { continue }
-            let key = ProcessKey(pid: pid, start: bsd.pbi_start_tvsec &* 1_000_000 &+ bsd.pbi_start_tvusec)
+            guard pid > 0, let bsd = Self.bsdInfo(pid) else { continue }
+            let key = Self.key(pid: pid, bsd: bsd)
             // PROC_PIDTBSDINFO is needed every sweep to build the key, so the cache only spares the path and
             // name lookups; that still avoids two syscalls per process per sweep.
             let identity = identities[key] ?? makeIdentity(key: key, bsd: bsd)
@@ -148,14 +148,24 @@ public struct ProcessSampler {
     }
 
     /// Nil when the process exited mid-sweep or can't be inspected (ESRCH, EPERM); either way it can't be keyed.
-    private func bsdInfo(_ pid: Int32) -> proc_bsdinfo? {
+    private static func bsdInfo(_ pid: Int32) -> proc_bsdinfo? {
         var info = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.stride)
         let written = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size)
         return written == size ? info : nil
     }
 
+    private static func key(pid: Int32, bsd: proc_bsdinfo) -> ProcessKey {
+        ProcessKey(pid: pid, start: bsd.pbi_start_tvsec &* 1_000_000 &+ bsd.pbi_start_tvusec)
+    }
+
     private mutating func makeIdentity(key: ProcessKey, bsd: proc_bsdinfo) -> ProcessIdentity {
+        Self.makeIdentity(key: key, bsd: bsd, pathBuffer: &pathBuffer, nameBuffer: &nameBuffer)
+    }
+
+    private static func makeIdentity(
+        key: ProcessKey, bsd: proc_bsdinfo, pathBuffer: inout [UInt8], nameBuffer: inout [UInt8]
+    ) -> ProcessIdentity {
         let pathLength = proc_pidpath(key.pid, &pathBuffer, UInt32(pathBuffer.count))
         let path = pathLength > 0 ? String(decoding: pathBuffer[..<Int(pathLength)], as: UTF8.self) : ""
         let nameLength = proc_name(key.pid, &nameBuffer, UInt32(nameBuffer.count))
@@ -163,6 +173,14 @@ public struct ProcessSampler {
         if name.isEmpty { name = (path as NSString).lastPathComponent }
         if name.isEmpty { name = "pid \(key.pid)" }
         return ProcessIdentity(key: key, ppid: Int32(bitPattern: bsd.pbi_ppid), uid: bsd.pbi_uid, name: name, path: path)
+    }
+
+    /// One-off lookup for short-lived callers such as hooks; nil when the process is gone or off limits.
+    public static func identity(pid: Int32) -> ProcessIdentity? {
+        guard pid > 0, let bsd = bsdInfo(pid) else { return nil }
+        var pathBuffer = [UInt8](repeating: 0, count: 4096)
+        var nameBuffer = [UInt8](repeating: 0, count: 256)
+        return makeIdentity(key: key(pid: pid, bsd: bsd), bsd: bsd, pathBuffer: &pathBuffer, nameBuffer: &nameBuffer)
     }
 
     private enum RusageResult {
