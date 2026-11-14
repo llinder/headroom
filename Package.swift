@@ -5,7 +5,7 @@ let swiftSettings: [SwiftSetting] = [.enableUpcomingFeature("ExistentialAny")]
 
 let package = Package(
     name: "headroom",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v15)],
     products: [
         .executable(name: "headroom", targets: ["headroom"]),
         .executable(name: "headroomd", targets: ["headroomd"]),
