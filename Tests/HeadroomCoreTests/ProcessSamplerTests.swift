@@ -52,4 +52,41 @@ import Testing
         let me = sampler.sweep().first { $0.identity.key.pid == getpid() }
         #expect((me?.cpuSeconds ?? 0) >= 0.2)
     }
+
+    // Restricted environments deny PROC_PIDTBSDINFO for many pids (EPERM), and those can't be keyed, so
+    // coverage is measured against the pids an independent probe can inspect rather than the raw list.
+    @Test func sweepCoversAllProcesses() {
+        var sampler = ProcessSampler()
+        let usages = sampler.sweep()
+
+        var listed = [Int32](repeating: 0, count: Int(proc_listallpids(nil, 0)) * 2)
+        let bytes = Int32(listed.count * MemoryLayout<Int32>.stride)
+        let count = Int(listed.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, bytes) })
+        let keyable = listed[..<count].filter { pid in
+            var info = proc_bsdinfo()
+            let size = Int32(MemoryLayout<proc_bsdinfo>.stride)
+            return pid > 0 && proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size
+        }.sorted()
+
+        #expect(usages.count >= keyable.count * 8 / 10)
+        let sweptMax = usages.map(\.identity.key.pid).max() ?? 0
+        #expect(sweptMax >= keyable[keyable.count * 9 / 10])
+    }
+
+    @Test func exitedProcessIsEvicted() throws {
+        var pid: pid_t = 0
+        let argv: [UnsafeMutablePointer<CChar>?] = [strdup("sleep"), strdup("30"), nil]
+        defer { argv.forEach { free($0) } }
+        #expect(posix_spawn(&pid, "/bin/sleep", nil, nil, argv, environ) == 0)
+
+        var sampler = ProcessSampler()
+        let child = try #require(sampler.sweep().first { $0.identity.key.pid == pid }?.identity.key)
+        #expect(sampler.isTracked(child))
+
+        kill(pid, SIGKILL)
+        var status: Int32 = 0
+        waitpid(pid, &status, 0)
+        _ = sampler.sweep()
+        #expect(!sampler.isTracked(child))
+    }
 }

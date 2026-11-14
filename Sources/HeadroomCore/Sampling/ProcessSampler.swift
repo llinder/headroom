@@ -102,12 +102,19 @@ public struct ProcessSampler {
             let identity = identities[key] ?? makeIdentity(key: key, bsd: bsd)
             nextIdentities[key] = identity
 
-            guard let rusage = rusage(pid) else {
+            let rusage: rusage_info_v6
+            switch readRusage(pid) {
+            case .gone:
+                nextIdentities[key] = nil
+                continue
+            case .denied:
                 usages.append(
                     ProcessUsage(
                         identity: identity, cpuSeconds: 0, footprint: 0, diskReadBytes: 0, diskWriteBytes: 0,
                         attributed: false))
                 continue
+            case .ok(let info):
+                rusage = info
             }
             let total = Self.cpuSeconds(
                 userNs: rusage.ri_user_time, systemNs: rusage.ri_system_time, timebase: timebase)
@@ -132,9 +139,8 @@ public struct ProcessSampler {
     private mutating func listPids() -> Int {
         while true {
             let bytes = Int32(pids.count * MemoryLayout<Int32>.stride)
-            let written = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, bytes) }
-            guard written > 0 else { return 0 }
-            let count = Int(written) / MemoryLayout<Int32>.stride
+            let count = Int(pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, bytes) })
+            guard count > 0 else { return 0 }
             // A full buffer may have truncated the list.
             if count < pids.count { return count }
             pids = [Int32](repeating: 0, count: pids.count * 2)
@@ -159,13 +165,26 @@ public struct ProcessSampler {
         return ProcessIdentity(key: key, ppid: Int32(bitPattern: bsd.pbi_ppid), uid: bsd.pbi_uid, name: name, path: path)
     }
 
-    private func rusage(_ pid: Int32) -> rusage_info_v6? {
+    private enum RusageResult {
+        case ok(rusage_info_v6)
+        /// EPERM: the process is real but off limits, so it is reported unattributed.
+        case denied
+        /// ESRCH or any other failure: treated as exited mid-sweep.
+        case gone
+    }
+
+    private func readRusage(_ pid: Int32) -> RusageResult {
         var info = rusage_info_v6()
         let status = withUnsafeMutablePointer(to: &info) { pointer in
             pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
                 proc_pid_rusage(pid, RUSAGE_INFO_V6, $0)
             }
         }
-        return status == 0 ? info : nil
+        if status == 0 { return .ok(info) }
+        return errno == EPERM ? .denied : .gone
+    }
+
+    func isTracked(_ key: ProcessKey) -> Bool {
+        identities[key] != nil
     }
 }
