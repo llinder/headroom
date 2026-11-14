@@ -21,6 +21,7 @@ private func tempDir() throws -> URL {
             == .report(since: localMidnight(2026, 12, 1), until: nil, machine: nil, out: "r.pdf"))
         #expect(try parse(["headroom", "statusline", "--no-color"]) == .statusline(format: nil, color: false, quiet: false))
         #expect(try parse(["headroom", "install", "--agents"]) == .install(agents: true))
+        #expect(try parse(["headroom", "tag", "--", "fixing", "--no-cache"]) == .tag("fixing --no-cache"))
         #expect(try parse(["headroom"]) == .top)
         #expect(try parse(["headroom", "hook", "zsh"]) == .hookZsh)
         #expect(try parse(["headroom", "agent-hook", "claude"]) == .agentHook(tool: "claude"))
@@ -34,6 +35,9 @@ private func tempDir() throws -> URL {
         #expect(throws: UsageError.self) { try parse(["headroom", "report", "--since", "2026-02-30"]) }
         #expect(throws: UsageError.self) { try parse(["headroom", "report", "--since"]) }
         #expect(throws: UsageError.self) { try parse(["headroom", "tag"]) }
+        #expect(throws: UsageError.self) { try parse(["headroom", "tag", "--"]) }
+        #expect(throws: UsageError.self) { try parse(["headroom", "tag", "fixing", "--no-cache"]) }
+        #expect(throws: UsageError.self) { try parse(["headroom", "tag", "--no-cache"]) }
         #expect(throws: UsageError.self) { try parse(["headroom", "install", "--wat"]) }
     }
 
@@ -92,7 +96,7 @@ private func tempDir() throws -> URL {
         try "{\"hooks\": \"headroom agent-hook claude\"}".write(
             to: home.appending(path: ".claude/settings.json"), atomically: true, encoding: .utf8)
 
-        let out = Status.render(queries: Queries(db: db), paths: paths, machineId: id, now: now, home: home)
+        let out = try Status.render(queries: Queries(db: db), paths: paths, machineId: id, now: now, home: home)
 
         #expect(out.contains("recording ●"))
         #expect(out.contains("machine Mac15,6 · 12 cores · 16 GB"))
@@ -103,7 +107,7 @@ private func tempDir() throws -> URL {
         #expect(out.contains("agent hooks installed"))
 
         try db.exec("UPDATE meta SET value='1' WHERE key='heartbeat'")
-        let stale = Status.render(queries: Queries(db: db), paths: paths, machineId: id, now: now, home: dir)
+        let stale = try Status.render(queries: Queries(db: db), paths: paths, machineId: id, now: now, home: dir)
         #expect(stale.hasPrefix("not recording ○"))
         #expect(stale.contains("agent hooks not installed"))
     }

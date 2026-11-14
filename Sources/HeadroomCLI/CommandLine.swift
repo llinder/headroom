@@ -62,7 +62,10 @@ public func parse(_ args: [String]) throws(UsageError) -> Command {
     case "help", "--help", "-h":
         return .help
     case "tag":
-        if let flag = rest.first(where: { $0.hasPrefix("--") }) { throw UsageError("unknown flag \(flag) for tag") }
+        // `--` ends flag parsing so tag text can start with dashes.
+        if rest.first == "--" { rest.removeFirst() } else if let flag = rest.first(where: { $0.hasPrefix("--") }) {
+            throw UsageError("unknown flag \(flag) for tag")
+        }
         guard !rest.isEmpty else { throw UsageError("tag needs text") }
         return .tag(rest.joined(separator: " "))
     case "report":

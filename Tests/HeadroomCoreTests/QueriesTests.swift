@@ -62,7 +62,7 @@ private final class Fixture {
         }
         try f.rollup(3600, at(1, 5), .cpuBusy, avg: 0.2, max: 0.3, p95: 0.25)
 
-        let stats = Queries(db: f.db).dailyMetric(
+        let stats = try Queries(db: f.db).dailyMetric(
             machineId: machine, metric: .cpuBusy, from: date(at(0, 0)), to: date(at(2, 0)), calendar: utc())
 
         #expect(stats.map(\.day) == ["2026-12-01", "2026-12-02"])
@@ -79,7 +79,7 @@ private final class Fixture {
         var tokyo = utc()
         tokyo.timeZone = TimeZone(identifier: "Asia/Tokyo") ?? .gmt
 
-        let stats = Queries(db: f.db).dailyMetric(
+        let stats = try Queries(db: f.db).dailyMetric(
             machineId: machine, metric: .load1, from: date(at(0, 0)), to: date(at(2, 0)), calendar: tokyo)
 
         // 08:00 and 10:00 on 2 December in Tokyo: one local day, two UTC days.
@@ -95,7 +95,7 @@ private final class Fixture {
         try f.rollup(60, at(0, 2, 0), .cpuBusy, avg: 0.2, max: 0.6, p95: 0.5)
         try f.rollup(60, at(0, 2, 1), .cpuBusy, avg: 0.4, max: 0.8, p95: 0.7)
 
-        let stats = Queries(db: f.db).dailyMetric(
+        let stats = try Queries(db: f.db).dailyMetric(
             machineId: machine, metric: .cpuBusy, from: date(at(0, 0)), to: date(at(1, 0)), calendar: utc())
 
         #expect(stats.count == 1)
@@ -112,7 +112,7 @@ private final class Fixture {
         try f.limit(60, at(0, 3, 1), .memoryLimited, 10)
         try f.limit(3600, at(1, 1), .memoryLimited, 7)
 
-        let today = Queries(db: f.db).todayLimitSeconds(machineId: machine, now: date(at(0, 3, 5)), calendar: utc())
+        let today = try Queries(db: f.db).todayLimitSeconds(machineId: machine, now: date(at(0, 3, 5)), calendar: utc())
 
         #expect(today[.memoryLimited] == 180)
     }
@@ -126,7 +126,7 @@ private final class Fixture {
             INSERT INTO agent_histogram VALUES('m1', \(at(5, 2)), 2, 9999, 9999, 9999);
             """)
 
-        let h = Queries(db: f.db).agentHistogram(machineId: machine, from: date(at(0, 0)), to: date(at(1, 0)))
+        let h = try Queries(db: f.db).agentHistogram(machineId: machine, from: date(at(0, 0)), to: date(at(1, 0)))
 
         #expect(h[2] == AgentLevelStats(seconds: 3600, memoryLimited: 100, cpuSaturated: 60))
         #expect(h[0]?.seconds == 3000)
@@ -152,18 +152,59 @@ private final class Fixture {
         let from = date(at(0, 0))
         let to = date(at(1, 0))
 
-        let usage = q.selfUsage(machineId: machine, from: from, to: to)
+        let usage = try q.selfUsage(machineId: machine, from: from, to: to)
         #expect(abs(usage.avgCPU - 0.005) < 1e-9)
         #expect(usage.maxFootprint == 6_000_000)
 
-        #expect(q.coverage(machineId: machine, from: from, to: to, calendar: utc()) == [
+        #expect(try q.coverage(machineId: machine, from: from, to: to, calendar: utc()) == [
             DayCoverage(
                 day: "2026-12-01", recorded: 80000, asleep: 6000, gap: 400,
                 gaps: [DateInterval(start: date(at(0, 5)), duration: 600)])
         ])
-        #expect(q.eventCounts(machineId: machine, from: from, to: to) == ["tag": 2, "sleep": 1])
-        #expect(q.heartbeat() == 123)
-        #expect(q.machines().first?.model == "Mac15,6")
-        #expect(q.machines().first?.perfCores == 8)
+        #expect(try q.eventCounts(machineId: machine, from: from, to: to) == ["tag": 2, "sleep": 1])
+        #expect(try q.heartbeat() == 123)
+        #expect(try q.machines().first?.model == "Mac15,6")
+        #expect(try q.machines().first?.perfCores == 8)
+    }
+
+    @Test func groupTotalsSumsCPUAndTakesPeakFootprint() throws {
+        let f = try Fixture()
+        try f.db.exec("""
+            INSERT INTO group_samples VALUES('m1', \(at(0, 1)), 'agents', 1.5, 100, 10, 2);
+            INSERT INTO group_samples VALUES('m1', \(at(0, 1) + 10), 'agents', 2.5, 900, 20, 5);
+            INSERT INTO group_samples VALUES('m1', \(at(0, 1) + 20), 'agents', 1.0, 300, 30, 3);
+            INSERT INTO group_samples VALUES('m1', \(at(0, 1)), 'ide', 4, 50, 0, 1);
+            INSERT INTO group_samples VALUES('m1', \(at(3, 1)), 'agents', 99, 99999, 99, 99);
+            """)
+
+        let totals = try Queries(db: f.db).groupTotals(machineId: machine, from: date(at(0, 0)), to: date(at(1, 0)))
+
+        #expect(totals[.agents] == GroupTotals(cpuSeconds: 5, footprint: 900, diskWriteBytes: 60, procCount: 5))
+        #expect(totals[.ide]?.cpuSeconds == 4)
+        #expect(totals.count == 2)
+    }
+
+    @Test func daylightSavingDayHas25HourlyRows() throws {
+        let f = try Fixture()
+        var la = Calendar(identifier: .gregorian)
+        la.timeZone = TimeZone(identifier: "America/Los_Angeles") ?? .gmt
+        // 2026-11-01 00:00 PDT; the clocks go back that morning, so the local day lasts 25 hours.
+        let start: Int64 = 1_793_516_400
+        for h in 0..<26 {
+            try f.rollup(3600, start + Int64(h) * 3600, .load1, avg: Double(h), max: Double(h), p95: Double(h))
+            try f.limit(3600, start + Int64(h) * 3600, .heavySwap, 1)
+        }
+        let q = Queries(db: f.db)
+        let to = date(start + 27 * 3600)
+
+        let stats = try q.dailyMetric(machineId: machine, metric: .load1, from: date(start), to: to, calendar: la)
+        let limits = try q.limitSecondsByDay(machineId: machine, from: date(start), to: to, calendar: la)
+
+        #expect(stats.map(\.day) == ["2026-11-01", "2026-11-02"])
+        #expect(stats[0].avg == 12)
+        #expect(stats[0].max == 24)
+        #expect(stats[1].max == 25)
+        #expect(limits["2026-11-01"]?[.heavySwap] == 25)
+        #expect(limits["2026-11-02"]?[.heavySwap] == 1)
     }
 }
