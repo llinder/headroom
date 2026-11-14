@@ -94,7 +94,9 @@ private final class ReportFixture {
             try insert(sample, [id, at(d, 9) + 10, 0.005, 9_437_184, 8_000_000_000])
         }
         try insert("INSERT INTO events VALUES(?,?,?,?)", [id, at(2, 14), "tag", #"{"text":"load test"}"#])
-        for kind in ["thermal", "jetsam", "hang", "hang"] {
+        try insert("INSERT INTO events VALUES(?,?,?,?)", [id, at(3, 13), "thermal", #"{"level":"2"}"#])
+        try insert("INSERT INTO events VALUES(?,?,?,?)", [id, at(3, 13) + 60, "thermal", #"{"level":"3"}"#])
+        for kind in ["jetsam", "hang", "hang"] {
             try insert("INSERT INTO events VALUES(?,?,?,?)", [id, at(3, 14), kind, #"{"file":"/Users/x/secret-repo/hang.ips"}"#])
         }
         try insert("INSERT INTO agent_histogram VALUES(?,?,?,?,?,?)", [id, at(1, 9), 1, 10_800.0, 0.0, 0.0])
@@ -268,6 +270,7 @@ private func fullText(_ doc: PDFDocument) -> String {
             "Processes that start and exit between two 10-second samples are counted as macOS system."))
         #expect(appendix.contains("headroomd used 0.05% of one core and at most 9.0 MB of memory."))
         #expect(m.appendix.events["hang"] == 2)
+        #expect(appendix.contains("Thermal slowdowns (serious or worse): 1."))
         #expect(m.appendix.agentRunCount == 1)
         #expect(m.appendix.agentCPUHours == 1)
     }

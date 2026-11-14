@@ -17,6 +17,7 @@ public struct Appendix: Sendable {
     public var ssdWriteGBPerDay: Double
     public var ssdWriteTBPerYear: Double
     public var events: [String: Int]
+    public var thermalSlowdowns: Int
     public var thresholds: [String]
     public var workdayDefinition: String
     public var recorderAvgCPUPercent: Double
@@ -27,7 +28,7 @@ public struct Appendix: Sendable {
 }
 
 /// Everything the PDF shows, worked out from the database so the renderer only lays it out. Only workload
-/// groups reach the model: process names, commands and event payloads are never read.
+/// groups reach the model: process names and commands are never read, and of event payloads only the thermal level.
 public struct ReportModel: Sendable {
     public var title: String
     public var coverage: String
@@ -244,6 +245,7 @@ public struct ReportModel: Sendable {
             groups: groups, agentRunCount: agents.runs, agentCPUHours: agents.cpuSeconds / 3600,
             ssdDays: written.count, ssdWriteGBPerDay: gbPerDay, ssdWriteTBPerYear: gbPerDay * 365 / 1000,
             events: try queries.eventCounts(machineId: machineId, from: from, to: to),
+            thermalSlowdowns: try queries.thermalSlowdowns(machineId: machineId, from: from, to: to),
             thresholds: [
                 "Memory ran out: memory pressure was at warning or critical, or memory was being swapped out to disk.",
                 "A workday counts as running out of memory after \(quantity(Double(limits.memoryLimitedDayMinSeconds) / 60, "minute")) of that.",

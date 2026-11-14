@@ -211,7 +211,7 @@ public enum PDFReport {
 
         c.text("Events", bodyBold, after: 3)
         c.text(
-            "Thermal slowdowns: \(a.events["thermal"] ?? 0). Apps closed by macOS to free memory: \(a.events["jetsam"] ?? 0). "
+            "Thermal slowdowns (serious or worse): \(a.thermalSlowdowns). Apps closed by macOS to free memory: \(a.events["jetsam"] ?? 0). "
                 + "Apps that stopped responding: \(a.events["hang"] ?? 0).", body)
 
         c.text("Method and thresholds", bodyBold, after: 3)

@@ -167,6 +167,30 @@ private final class Fixture {
         #expect(try q.machines().first?.perfCores == 8)
     }
 
+    @Test func thermalSlowdownsCountOnlyEntriesIntoSerious() throws {
+        let f = try Fixture()
+        for (minute, level) in [0, 1, 0, 2, 3, 0].enumerated() {
+            try f.db.exec("INSERT INTO events VALUES('m1', \(at(0, 1, minute)), 'thermal', '{\"level\":\"\(level)\"}')")
+        }
+        let q = Queries(db: f.db)
+        #expect(try q.thermalSlowdowns(machineId: machine, from: date(at(0, 0)), to: date(at(1, 0))) == 1)
+    }
+
+    @Test func thermalSlowdownsSeedFromTheLastEventBeforeTheRange() throws {
+        let f = try Fixture()
+        try f.db.exec("""
+            INSERT INTO events VALUES('m1', \(at(0, 1)), 'thermal', '{"level":"2"}');
+            INSERT INTO events VALUES('m1', \(at(1, 1)), 'thermal', '{"level":"3"}');
+            INSERT INTO events VALUES('m1', \(at(1, 2)), 'thermal', '{"level":"1"}');
+            INSERT INTO events VALUES('m1', \(at(1, 3)), 'thermal', '{"level":"2"}');
+            INSERT INTO events VALUES('m2', \(at(1, 4)), 'thermal', '{"level":"3"}');
+            """)
+        let q = Queries(db: f.db)
+        // Already serious when the range opens, so critical isn't a new slowdown; the later climb from fair is.
+        #expect(try q.thermalSlowdowns(machineId: machine, from: date(at(1, 0)), to: date(at(2, 0))) == 1)
+        #expect(try q.thermalSlowdowns(machineId: machine, from: date(at(0, 0)), to: date(at(2, 0))) == 2)
+    }
+
     @Test func groupTotalsSumsCPUAndTakesPeakFootprint() throws {
         let f = try Fixture()
         try f.db.exec("""

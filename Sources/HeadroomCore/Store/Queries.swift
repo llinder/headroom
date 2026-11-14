@@ -244,6 +244,31 @@ public struct Queries {
         return Dictionary(uniqueKeysWithValues: counts)
     }
 
+    /// Entries into serious or critical. The recorder logs every level change, so counting raw thermal events
+    /// would also count each step back down and each serious-to-critical move as another slowdown. The last
+    /// level before the range seeds the walk, so a slowdown already under way when the range opens isn't new.
+    public func thermalSlowdowns(machineId: String, from: Date, to: Date) throws(DatabaseError) -> Int {
+        let level = "COALESCE(CAST(json_extract(payload, '$.level') AS INTEGER), 0)"
+        let seed = try rows(
+            "SELECT \(level) FROM events WHERE machine_id=? AND kind='thermal' AND ts<? ORDER BY ts DESC, rowid DESC LIMIT 1"
+        ) { s in
+            s.bind(1, machineId)
+            s.bind(2, Int64(from.timeIntervalSince1970))
+        } read: { $0.int64(0) }
+        let levels = try rows(
+            "SELECT \(level) FROM events WHERE machine_id=? AND kind='thermal' AND ts>=? AND ts<? ORDER BY ts, rowid"
+        ) { s in bindRange(s, machineId, from, to) } read: { $0.int64(0) }
+
+        let serious = Int64(ThermalLevel.serious.rawValue)
+        var previous = seed.first ?? Int64(ThermalLevel.nominal.rawValue)
+        var entries = 0
+        for current in levels {
+            if current >= serious && previous < serious { entries += 1 }
+            previous = current
+        }
+        return entries
+    }
+
     /// `avgCPU` is a fraction of one core: the sum of per-tick CPU seconds over the seconds the ticks span.
     public func selfUsage(machineId: String, from: Date, to: Date) throws(DatabaseError) -> (avgCPU: Double, maxFootprint: UInt64) {
         let usage = try rows(
