@@ -67,17 +67,19 @@ final class TopSession {
             machine: machine, cpu: tick.cpu, cpuHistory: history, memory: tick.memory, disk: tick.disk,
             diskGrowthPerDay: stored.diskGrowthPerDay,
             groups: tick.groups.map { ($0.key, $0.value) },
-            topProcs: tick.topByCPU.map { ($0.name, $0.value, UInt64(memoryByName[$0.name] ?? 0)) },
+            topProcs: tick.topByCPU.map { ($0.name, $0.value, TopRenderer.clampedUInt64(memoryByName[$0.name] ?? 0)) },
             // The tracker dates a run from when this process first saw it; the process's own start time is the real age.
             agents: tick.agents.live.map { run in
                 var shown = run
-                shown.started = Double(run.root.start) / 1_000_000
+                shown.started = Self.startedSeconds(microseconds: run.root.start)
                 return (run: shown, directory: Self.workingDirectoryName(pid: run.root.pid))
             },
             today: stored.today, recordingDays: stored.recordingDays, gapCount: stored.gapCount,
             recorderRunning: stored.recorderRunning, showProcesses: showProcesses, showAgents: showAgents,
             now: tick.ts)
     }
+
+    nonisolated static func startedSeconds(microseconds: UInt64) -> Double { Double(microseconds) / 1_000_000 }
 
     private func readStored(now: Date) -> Stored {
         guard FileManager.default.fileExists(atPath: paths.database.path),
@@ -186,7 +188,9 @@ enum TopCommand {
         }
 
         var sources: [any DispatchSourceProtocol] = []
-        for number in [SIGINT, SIGTERM] {
+        // A runtime trap can still leave the terminal raw (restoring from a fatal-signal handler would need global
+        // termios storage); `render` is kept trap-free instead, and `reset` recovers in the rare case.
+        for number in [SIGINT, SIGTERM, SIGHUP] {
             signal(number, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
             source.setEventHandler { MainActor.assumeIsolated { finish(0) } }
@@ -202,7 +206,10 @@ enum TopCommand {
             var buffer = [UInt8](repeating: 0, count: 64)
             let count = read(STDIN_FILENO, &buffer, buffer.count)
             // EOF means the terminal went away; looping on a readable-forever fd would spin.
-            if count <= 0 { MainActor.assumeIsolated { finish(0) } }
+            if count <= 0 {
+                MainActor.assumeIsolated { finish(0) }
+                return
+            }
             for byte in buffer.prefix(count) {
                 MainActor.assumeIsolated {
                     switch byte {

@@ -36,7 +36,11 @@ final class Terminal {
 
     /// One `write` per frame so the screen never shows a half-drawn state.
     func draw(_ lines: [String]) {
-        write("\u{1B}[H" + lines.map { $0 + "\u{1B}[K" }.joined(separator: "\n") + "\u{1B}[J")
+        // Clearing before each line, never after it: a full-width line leaves xterm-family terminals in
+        // pending-wrap, where a trailing erase would wipe the last column.
+        var frame = "\u{1B}[H" + lines.map { "\u{1B}[2K" + $0 }.joined(separator: "\n")
+        if lines.count < size().1 { frame += "\n\u{1B}[J" }
+        write(frame)
     }
 
     func restore() {

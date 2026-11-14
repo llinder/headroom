@@ -31,6 +31,18 @@ enum TopRenderer {
     private static let gib = 1_073_741_824.0
     private static let gb = 1_000_000_000.0
 
+    /// Every Double-to-Int conversion in the TUI goes through here: NaN, infinity and huge values would trap a
+    /// bare `Int(_:)`, and a trap mid-frame leaves the terminal raw.
+    static func clampedInt(_ value: Double, upTo limit: Double = 1e9) -> Int {
+        value.isFinite ? Int(min(max(value, 0), limit)) : 0
+    }
+
+    static func clampedUInt64(_ value: Double) -> UInt64 {
+        value.isFinite ? UInt64(min(max(value, 0), 1e18)) : 0
+    }
+
+    private static func finite(_ value: Double) -> Double { value.isFinite ? value : 0 }
+
     static func render(_ s: TopState, width: Int, height: Int) -> [String] {
         var lines = [header(s, width: width), cpuRow(s), memoryRow(s), swapRow(s), diskRow(s)]
         lines += s.showProcesses ? processPane(s, width: width) : groupPane(s, width: width)
@@ -57,8 +69,8 @@ enum TopRenderer {
 
     private static func header(_ s: TopState, width: Int) -> String {
         let name = s.machine.chip.isEmpty ? s.machine.model : s.machine.chip
-        let ram = Int((Double(s.machine.ramBytes) / gib).rounded())
-        let disk = Int((Double(s.machine.diskBytes) / gb).rounded())
+        let ram = clampedInt((Double(s.machine.ramBytes) / gib).rounded())
+        let disk = clampedInt((Double(s.machine.diskBytes) / gb).rounded())
         let left = " headroom ── \(name) · \(s.machine.perfCores + s.machine.effCores) cores · \(ram) GB · \(disk) GB "
         let right = s.recorderRunning ? "recording ● \(s.recordingDays)d, \(s.gapCount) gaps" : "not recording ○"
         let fill = max(1, width - displayWidth(left) - displayWidth(right) - 1)
@@ -67,9 +79,9 @@ enum TopRenderer {
 
     private static func cpuRow(_ s: TopState) -> String {
         let spark = s.cpuHistory.suffix(sparkCells).map { value -> Character in
-            sparkBlocks[Int((min(1, max(0, value)) * Double(sparkBlocks.count - 1)).rounded())]
+            sparkBlocks[clampedInt((min(1, max(0, finite(value))) * Double(sparkBlocks.count - 1)).rounded(), upTo: Double(sparkBlocks.count - 1))]
         }
-        let percent = Int(((s.cpu.user + s.cpu.system) * 100).rounded())
+        let percent = clampedInt(((s.cpu.user + s.cpu.system) * 100).rounded(), upTo: 99_999)
         return " CPU     \(String(spark))  \(percent)%   saturated \(hours(s.today[.cpuSaturated])) today"
     }
 
@@ -94,13 +106,13 @@ enum TopRenderer {
         var row =
             " Disk    \(bar(Double(used), of: Double(s.disk.capacity))) \(gigs(used, gb, digits: 0))/\(gigs(s.disk.capacity, gb, digits: 0)) GB"
         if let growth = s.diskGrowthPerDay {
-            row += "   \(growth < 0 ? "-" : "+")\(String(format: "%.1f", abs(growth) / gb)) GB/day"
+            row += "   \(growth < 0 ? "-" : "+")\(String(format: "%.1f", abs(finite(growth)) / gb)) GB/day"
         }
         return row
     }
 
     private static func bar(_ value: Double, of total: Double) -> String {
-        let filled = total > 0 ? Int((min(1, max(0, value / total)) * Double(barCells)).rounded()) : 0
+        let filled = total > 0 ? clampedInt((min(1, max(0, finite(value / total))) * Double(barCells)).rounded(), upTo: Double(barCells)) : 0
         return String(repeating: "█", count: filled) + String(repeating: "░", count: barCells - filled)
     }
 
@@ -109,7 +121,7 @@ enum TopRenderer {
     }
 
     private static func hours(_ seconds: Double?) -> String {
-        String(format: "%.1fh", (seconds ?? 0) / 3600)
+        String(format: "%.1fh", finite((seconds ?? 0) / 3600))
     }
 
     private static func ruled(_ title: String, tail: String, width: Int) -> String {
@@ -131,7 +143,7 @@ enum TopRenderer {
     }
 
     private static func usageRow(_ name: String, _ cpuSeconds: Double, _ footprint: UInt64, width: Int) -> String {
-        " " + pad(name, max(0, width - 14)) + rpad("\(Int((cpuSeconds * 100).rounded()))%", 6)
+        " " + pad(name, max(0, width - 14)) + rpad("\(clampedInt((cpuSeconds * 100).rounded(), upTo: 99_999))%", 6)
             + rpad(gigs(footprint, gib) + "G", 7)
     }
 
@@ -139,14 +151,14 @@ enum TopRenderer {
         let rows = s.agents.map { agent -> String in
             let run = agent.run
             return " " + pad(run.tool.rawValue, 7) + pad(agent.directory ?? "—", max(0, width - 35))
-                + rpad(age(s.now - run.started), 8) + rpad("\(Int((run.cpuSeconds * 100).rounded()))%", 6)
+                + rpad(age(s.now - run.started), 8) + rpad("\(clampedInt((run.cpuSeconds * 100).rounded(), upTo: 99_999))%", 6)
                 + rpad(gigs(run.footprint, gib) + "G", 7) + rpad(run.isActive ? "" : "idle", 6)
         }
         return [ruled("agents (\(s.agents.count))", tail: "age ── CPU ── Mem ──", width: width)] + rows
     }
 
     private static func age(_ seconds: Double) -> String {
-        let minutes = Int(max(0, seconds) / 60)
+        let minutes = clampedInt(seconds / 60, upTo: 9999 * 60)
         return minutes < 60 ? "\(minutes)m" : "\(minutes / 60)h\(minutes % 60)m"
     }
 }

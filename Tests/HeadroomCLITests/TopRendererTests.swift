@@ -54,7 +54,7 @@ private func run(_ tool: AgentTool, pid: Int32, minutes: Double, cpu: Double, ac
         let agents = [
             (run: run(.claude, pid: 1, minutes: 121, cpu: 0.6, active: true), directory: Optional("a-very-long-directory-name-indeed"))
         ]
-        for width in [60, 80, 120] {
+        for width in [20, 40, 60, 80, 120] {
             for line in TopRenderer.render(state(today: [.cpuSaturated: 5000], agents: agents), width: width, height: 40) {
                 #expect(TopRenderer.displayWidth(line) <= width)
             }
@@ -117,5 +117,47 @@ private func run(_ tool: AgentTool, pid: Int32, minutes: Double, cpu: Double, ac
 
     @Test func heightTruncates() {
         #expect(TopRenderer.render(state(), width: 80, height: 3).count == 3)
+    }
+
+    @Test func tinyTerminalNeverTraps() {
+        let agents = [(run: run(.claude, pid: 1, minutes: 5, cpu: 0.2, active: true), directory: Optional("x"))]
+        for (width, height) in [(10, 3), (1, 1), (0, 0)] {
+            let lines = TopRenderer.render(state(agents: agents), width: width, height: height)
+            #expect(lines.count <= height)
+            for line in lines { #expect(TopRenderer.displayWidth(line) <= width) }
+        }
+    }
+
+    @Test func garbageInputsNeverTrap() {
+        var s = state(history: [.nan, .infinity, 1e30, -1])
+        s.cpu.user = .nan
+        s.cpu.system = .infinity
+        s.memory.total = 0
+        s.memory.swapTotal = 0
+        s.disk.capacity = 0
+        s.diskGrowthPerDay = .nan
+        s.today = [.cpuSaturated: .infinity, .memoryLimited: .nan]
+        s.groups = [(.other, GroupTotals(cpuSeconds: 1e30, footprint: UInt64.max, diskWriteBytes: 0, procCount: 1))]
+        s.topProcs = [("p", .infinity, UInt64.max)]
+        s.agents = [
+            (run: AgentRun(
+                root: ProcessKey(pid: 1, start: 0), tool: .claude, started: 0, isActive: true, cpuSeconds: .nan,
+                footprint: UInt64.max, diskWriteBytes: 0), directory: nil),
+            (run: AgentRun(
+                root: ProcessKey(pid: 2, start: 0), tool: .codex, started: now + 1e12, isActive: false, cpuSeconds: 1e30,
+                footprint: 0, diskWriteBytes: 0), directory: nil),
+        ]
+        for showProcesses in [false, true] {
+            s.showProcesses = showProcesses
+            let lines = TopRenderer.render(s, width: 100, height: 40)
+            #expect(!lines.isEmpty)
+            #expect(lines.allSatisfy { TopRenderer.displayWidth($0) <= 100 })
+        }
+        #expect(TopRenderer.render(s, width: 100, height: 40).contains { $0.contains("9999h") })
+    }
+
+    @Test func startedConvertsMicrosecondsToSeconds() {
+        #expect(TopSession.startedSeconds(microseconds: 1_700_000_000_500_000) == 1_700_000_000.5)
+        #expect(TopSession.startedSeconds(microseconds: 0) == 0)
     }
 }
