@@ -289,4 +289,32 @@ private final class Home {
         let (code, _) = h.uninstall()
         #expect(code == 0)
     }
+
+    @Test func configModeSurvivesInstallAndUninstall() throws {
+        let h = try Home()
+        let settings = h.home.appending(path: ".claude/settings.json")
+        try Data(existing.utf8).write(to: settings)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: settings.path)
+        func mode() throws -> Int? {
+            (try FileManager.default.attributesOfItem(atPath: settings.path)[.posixPermissions] as? NSNumber)?.intValue
+        }
+        _ = h.install(agents: true)
+        #expect(try mode() == 0o600)
+        _ = h.uninstall()
+        #expect(try mode() == 0o600)
+    }
+
+    @Test func newConfigIsCreatedPrivate() throws {
+        let h = try Home()
+        _ = h.install(agents: true)
+        let settings = h.home.appending(path: ".claude/settings.json")
+        let mode = try FileManager.default.attributesOfItem(atPath: settings.path)[.posixPermissions] as? NSNumber
+        #expect(mode?.intValue == 0o600)
+    }
+
+    @Test func uninstallNeverCreatesMissingConfig() throws {
+        let h = try Home()
+        _ = h.uninstall()
+        #expect(!FileManager.default.fileExists(atPath: h.home.appending(path: ".claude/settings.json").path))
+    }
 }

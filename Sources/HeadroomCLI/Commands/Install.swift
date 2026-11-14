@@ -191,7 +191,7 @@ enum Install {
         }
         for (file, _) in hookFiles(home: home) where fm.fileExists(atPath: file.path) {
             update(file, now: now, out: out, err: err) { data in
-                guard let data, HookConfig.contains(data) else { return data ?? Data() }
+                guard let data, HookConfig.contains(data) else { return nil }
                 return try HookConfig.removed(data)
             }
         }
@@ -203,7 +203,7 @@ enum Install {
     /// Backs up the original and writes only when the content changes. Only a missing file counts as empty: an
     /// unreadable or unparseable one is reported and left alone. Symlinks are resolved so the link survives the write.
     private static func update(
-        _ original: URL, now: Date, out: (String) -> Void, err: (String) -> Void, transform: (Data?) throws -> Data
+        _ original: URL, now: Date, out: (String) -> Void, err: (String) -> Void, transform: (Data?) throws -> Data?
     ) {
         let file = original.resolvingSymlinksInPath()
         let fm = FileManager.default
@@ -216,7 +216,7 @@ enum Install {
             existing = data
         }
         do {
-            let updated = try transform(existing)
+            guard let updated = try transform(existing) else { return }
             if let existing {
                 if updated == existing { return }
                 let old = try JSONSerialization.jsonObject(with: existing) as? NSDictionary
@@ -224,7 +224,10 @@ enum Install {
                 if old == new { return }
                 try backup(file, contents: existing, now: now)
             }
+            // Atomic writes land a new inode at the default mode; configs here can hold tokens, so keep the original's.
+            let mode = existing == nil ? 0o600 : try permissions(of: file)
             try updated.write(to: file, options: .atomic)
+            try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: file.path)
             out("updated \(original.path)")
         } catch let error as HookConfigError {
             err("\(original.path): \(error.message); left unchanged")
@@ -233,18 +236,29 @@ enum Install {
         }
     }
 
+    private static func permissions(of file: URL) throws -> Int {
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        return (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0o600
+    }
+
+    // O_EXCL makes the name claim atomic, so concurrent installs can't clobber each other's backup.
     private static func backup(_ file: URL, contents: Data, now: Date) throws {
-        let fm = FileManager.default
-        let base = "\(file.lastPathComponent).headroom-backup-\(Int(now.timeIntervalSince1970))"
-        var target = file.deletingLastPathComponent().appending(path: base)
+        let mode = try permissions(of: file)
+        let base = file.deletingLastPathComponent().appending(
+            path: "\(file.lastPathComponent).headroom-backup-\(Int(now.timeIntervalSince1970))")
         var suffix = 0
-        while fm.fileExists(atPath: target.path) {
-            suffix += 1
-            target = file.deletingLastPathComponent().appending(path: "\(base)-\(suffix)")
-        }
-        try contents.write(to: target)
-        if let mode = try fm.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber {
-            try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: target.path)
+        while true {
+            let target = suffix == 0 ? base : URL(filePath: "\(base.path)-\(suffix)")
+            let fd = open(target.path, O_WRONLY | O_CREAT | O_EXCL, mode_t(mode))
+            if fd < 0 {
+                guard errno == EEXIST else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+                suffix += 1
+                continue
+            }
+            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            try handle.write(contentsOf: contents)
+            try handle.close()
+            return
         }
     }
 
