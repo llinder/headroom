@@ -579,7 +579,7 @@ concurrent agents, and a free-text note on the source. The repo ships
 ## Footprint budget
 
 - `headroomd`: under 0.1% average CPU, under 15 MB footprint, one small DB
-  write a minute plus in-place `live.state` updates.
+  write a minute plus a `live.state` atomic rename every 10 s.
 - `ProcessType=Background`; a single `DispatchSourceTimer` with leeway; no
   busy loops; no Foundation-heavy formatting on the hot path.
 - It records its own usage each sample. `status` and the report show it.

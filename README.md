@@ -64,6 +64,10 @@ Does everything `make install` does, then adds a `SessionStart` hook that runs
 - `~/.claude/settings.json` (Claude Code), and
 - `~/.codex/hooks.json` (Codex).
 
+`install` copies the binaries from the directory of the `headroom` you run, and it
+doesn't build anything: run `make install` first, or `swift build -c release` and
+then `.build/release/headroom install --agents`.
+
 A file is only touched if its directory already exists. The hook is merged in
 next to your existing hooks, and nothing is added twice. Before changing a file
 it saves a copy next to it as `<name>.headroom-backup-<unix time>` with the
@@ -148,7 +152,7 @@ The PDF is US Letter, rendered natively, with wording from deterministic rules
 
 - `headroom status` shows recorder health, the machine, days recorded, coverage
   of awake time and gaps, database size, the recorder's own average CPU and
-  memory over the last 24 h, and whether agent hooks are installed.
+  peak memory over the last 24 h, and whether agent hooks are installed.
 - `headroom tag "<note>"` adds a timestamped note that appears as a marker on the
   report charts. Use `--` first if the text starts with dashes.
 - `headroom top` is the live terminal view shown above (also the default when you
@@ -185,8 +189,7 @@ one is ignored with a warning, never overwritten.
   "agentActiveCoreFraction": 0.05,
   "capacityMaxLimitedShare": 0.05,
   "capacityMinSecondsPerLevel": 3600,
-  "capacityMinTotalSeconds": 18000,
-  "commandMinSeconds": 30
+  "capacityMinTotalSeconds": 18000
 }
 ```
 

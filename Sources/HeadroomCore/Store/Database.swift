@@ -23,7 +23,9 @@ public final class Database {
         }
         handle = raw
         // handle is already assigned, so deinit closes the connection if a PRAGMA throws.
-        try exec("PRAGMA busy_timeout=50")
+        // Readers are interactive commands that can start just as the recorder restarts, so they wait; the recorder's
+        // own connection keeps a short timeout so a stuck lock never stalls sampling.
+        try exec("PRAGMA busy_timeout=\(readOnly ? 2000 : 50)")
         if !readOnly {
             try exec("PRAGMA journal_mode=WAL")
             try exec("PRAGMA synchronous=NORMAL")

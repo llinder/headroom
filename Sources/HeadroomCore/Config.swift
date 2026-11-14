@@ -30,7 +30,6 @@ public struct HeadroomConfig: Codable, Sendable, Equatable {
     public var capacityMaxLimitedShare = 0.05
     public var capacityMinSecondsPerLevel = 3600
     public var capacityMinTotalSeconds = 18000
-    public var commandMinSeconds = 30
 
     public init() {}
 
@@ -44,7 +43,6 @@ public struct HeadroomConfig: Codable, Sendable, Equatable {
         capacityMinSecondsPerLevel =
             try c.decodeIfPresent(Int.self, forKey: .capacityMinSecondsPerLevel) ?? d.capacityMinSecondsPerLevel
         capacityMinTotalSeconds = try c.decodeIfPresent(Int.self, forKey: .capacityMinTotalSeconds) ?? d.capacityMinTotalSeconds
-        commandMinSeconds = try c.decodeIfPresent(Int.self, forKey: .commandMinSeconds) ?? d.commandMinSeconds
     }
 
     /// A missing file is the normal first-run state, so it yields the defaults without a warning.

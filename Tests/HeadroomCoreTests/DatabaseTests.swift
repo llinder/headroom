@@ -139,4 +139,33 @@ private func column(_ db: Database, _ sql: String) throws(DatabaseError) -> [Str
             return true
         }
     }
+
+    @Test func readOnlyOpenWaitsOutALockedWriter() throws {
+        let path = tempDBPath()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        var writer: Database? = try Database(path: path, readOnly: false)
+        try Schema.migrate(try #require(writer))
+        // Exclusive locking mode makes readers fail with SQLITE_BUSY while the transaction is open.
+        try writer?.exec("PRAGMA locking_mode=EXCLUSIVE")
+        try writer?.exec("BEGIN IMMEDIATE")
+        try writer?.exec("INSERT INTO meta(key, value) VALUES ('held', '1')")
+
+        let outcome = Mutex<String?>(nil)
+        let reader = Thread {
+            do {
+                let db = try Database(path: path, readOnly: true)
+                outcome.withLock { $0 = (try? column(db, "SELECT count(*) FROM meta").first) ?? "query failed" }
+            } catch {
+                outcome.withLock { $0 = "open failed: \(error)" }
+            }
+        }
+        reader.start()
+        Thread.sleep(forTimeInterval: 0.2)
+        // Exclusive mode keeps the file lock until the connection closes, not at COMMIT.
+        try writer?.exec("COMMIT")
+        writer = nil
+        while outcome.withLock({ $0 }) == nil { Thread.sleep(forTimeInterval: 0.01) }
+        #expect(outcome.withLock { $0 } != nil && outcome.withLock { $0 }?.hasPrefix("open failed") == false)
+        #expect(outcome.withLock { $0 } != "query failed")
+    }
 }
