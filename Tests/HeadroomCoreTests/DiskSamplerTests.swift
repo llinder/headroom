@@ -60,7 +60,7 @@ import Testing
         fsync(fd)
     }
 
-    @Test func liveSmoke() throws {
+    @Test(.enabled(if: DiskSampler.ioTotals() != nil)) func liveSmoke() throws {
         var sampler = DiskSampler()
         let firstReading = sampler.sample(refreshSpace: true)
         let first = try #require(firstReading)

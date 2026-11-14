@@ -87,7 +87,8 @@ public struct DiskSampler {
             capacity: capacity, free: free, availableImportant: important.map { UInt64(max($0, 0)) } ?? free)
     }
 
-    /// Sums the counters of every `IOBlockStorageDriver`; nil when no service can be enumerated.
+    /// Sums the counters of the internal `IOBlockStorageDriver`s only, so USB/Thunderbolt drives and disk images
+    /// don't count as SSD writes. Nil when none can be enumerated or none is internal with statistics.
     static func ioTotals() -> DiskIOTotals? {
         var iterator: io_iterator_t = 0
         guard
@@ -97,21 +98,32 @@ public struct DiskSampler {
         defer { IOObjectRelease(iterator) }
 
         var totals = DiskIOTotals(readBytes: 0, writeBytes: 0, readOps: 0, writeOps: 0)
-        var services = 0
+        var internalDrives = 0
         while case let service = IOIteratorNext(iterator), service != 0 {
             defer { IOObjectRelease(service) }
-            services += 1
-            guard
+            guard isInternal(service),
                 let property = IORegistryEntryCreateCFProperty(
                     service, "Statistics" as CFString, kCFAllocatorDefault, 0),
                 let statistics = property.takeRetainedValue() as? [String: Any]
             else { continue }
+            internalDrives += 1
             func value(_ key: String) -> UInt64 { (statistics[key] as? NSNumber)?.uint64Value ?? 0 }
             totals.readBytes &+= value("Bytes (Read)")
             totals.writeBytes &+= value("Bytes (Write)")
             totals.readOps &+= value("Operations (Read)")
             totals.writeOps &+= value("Operations (Write)")
         }
-        return services > 0 ? totals : nil
+        return internalDrives > 0 ? totals : nil
+    }
+
+    // The interconnect location lives on a parent of the driver, not on the driver itself.
+    private static func isInternal(_ service: io_object_t) -> Bool {
+        guard
+            let property = IORegistryEntrySearchCFProperty(
+                service, kIOServicePlane, "Protocol Characteristics" as CFString, kCFAllocatorDefault,
+                IOOptionBits(kIORegistryIterateParents | kIORegistryIterateRecursively)),
+            let characteristics = property as? [String: Any]
+        else { return false }
+        return characteristics["Physical Interconnect Location"] as? String == "Internal"
     }
 }
