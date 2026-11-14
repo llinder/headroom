@@ -7,6 +7,9 @@ struct SamplingBenchmarkTests {
     @Test func samplingPassBudget() {
         var pipeline = SamplingPipeline(classifier: Classifier(rules: .defaults, currentUID: getuid()), config: HeadroomConfig())
         pipeline.discard()
+        var counter = ProcessSampler()
+        let processCount = counter.sweep().count
+        let budget = budgetPerProcess * processCount
 
         // The median of batch means, so one batch slowed by other tests running in parallel can't fail the run.
         let batches = 10
@@ -27,13 +30,14 @@ struct SamplingBenchmarkTests {
         batchMeans.sort()
         let median = (batchMeans[batches / 2 - 1] + batchMeans[batches / 2]) / 2
         #expect(recorded == batches * passesPerBatch)
-        #expect(median <= budget, "median sampling pass \(median)")
+        #expect(median <= budget, "median sampling pass \(median) for \(processCount) processes, budget \(budget)")
     }
 
-    // Measured on an M-series dev machine with ~410 processes, in a debug build (what `swift test` runs):
-    // 3.4–3.6 ms per pass as the mean of 1,000 and as the median of 10 batches of 100; 1.7–1.9 ms in release.
-    // 2× the debug value is over the 5 ms cap, so the cap applies.
-    private let budget = Duration.milliseconds(5)
+    // The pass sweeps every readable process, so its cost grows with the process count; a fixed 5 ms cap flaked
+    // as a dev machine got busier. Measured in a debug build (what `swift test` runs) on an M-series machine:
+    // 3.4–3.6 ms for ~410 swept processes (~8.5 µs each) when quiet, 4.7–5.1 ms for ~430 (~11 µs each) under
+    // load average 4. Release is about half that.
+    private let budgetPerProcess = Duration.microseconds(15)
 }
 
 struct SamplingPipelineTests {
