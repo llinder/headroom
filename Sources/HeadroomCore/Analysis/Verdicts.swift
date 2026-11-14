@@ -131,15 +131,23 @@ public enum Verdicts {
         return -zip(xs, ys).reduce(0) { $0 + ($1.0 - meanX) * ($1.1 - meanY) } / spread
     }
 
-    /// "Continuously" is only claimed when gaps are under 1% of awake time.
+    /// "Continuously" is only claimed when gaps are under 1% of awake time. Under a day of recording is given
+    /// in hours: "1 day" for a two-hour trial, or "2 days" for one evening across midnight, would overstate it.
     public static func coverage(_ c: [DayCoverage]) -> String {
         let recorded = c.reduce(0) { $0 + $1.recorded }
         let awake = c.reduce(0) { $0 + $1.recorded + $1.gap }
         let days = c.filter { $0.recorded > 0 }.count
         guard days > 0, awake > 0 else { return "Nothing has been recorded yet." }
         let share = recorded / awake
+        let percent = Wording.percent(share)
+        if recorded < 86_400 {
+            let hours = recorded / 3600
+            // Below 9.95 the one decimal can't round up to "10.0".
+            let text = hours < 9.95 ? Wording.decimal(hours, places: 1) : Wording.decimal(hours, places: 0)
+            return "Recorded for \(text) \(text == "1" ? "hour" : "hours") (\(percent) of awake time)."
+        }
         let how = share >= 0.99 ? "Recorded continuously" : "Recorded"
-        return "\(how) for \(Wording.plural(days, "day")) (\(Wording.percent(share)) of awake time)."
+        return "\(how) for \(Wording.plural(days, "day")) (\(percent) of awake time)."
     }
 
     private static let noWorkdays = "No workdays recorded yet."

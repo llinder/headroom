@@ -97,8 +97,20 @@ private func weeklyFree(_ lossPerWeek: UInt64, endingAt end: Date = storageNow) 
     }
 
     @Test func coverageWithLargeGapsIsNotContinuous() {
-        let c = (0..<3).map { DayCoverage(day: day($0), recorded: 8000, asleep: 0, gap: 2000, gaps: []) }
+        let c = (0..<3).map { DayCoverage(day: day($0), recorded: 40_000, asleep: 0, gap: 10_000, gaps: []) }
         #expect(Verdicts.coverage(c) == "Recorded for 3 days (80% of awake time).")
+    }
+
+    @Test func coverageUnderADayIsInHours() {
+        let short = [DayCoverage(day: day(0), recorded: 5_400, asleep: 0, gap: 0, gaps: [])]
+        #expect(Verdicts.coverage(short) == "Recorded for 1.5 hours (100% of awake time).")
+        let split = [
+            DayCoverage(day: day(0), recorded: 21_600, asleep: 0, gap: 0, gaps: []),
+            DayCoverage(day: day(1), recorded: 22_320, asleep: 0, gap: 4_880, gaps: []),
+        ]
+        #expect(Verdicts.coverage(split) == "Recorded for 12 hours (90% of awake time).")
+        let almostTen = [DayCoverage(day: day(0), recorded: 35_900, asleep: 0, gap: 0, gaps: [])]
+        #expect(Verdicts.coverage(almostTen) == "Recorded for 10 hours (100% of awake time).")
     }
 
     // MARK: Verdicts
