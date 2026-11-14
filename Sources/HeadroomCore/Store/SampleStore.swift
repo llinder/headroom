@@ -273,8 +273,18 @@ public final class SampleStore {
         pruneSamples = try db.prepare("DELETE FROM samples WHERE ts < ?")
         pruneGroups = try db.prepare("DELETE FROM group_samples WHERE ts < ?")
         pruneTop = try db.prepare("DELETE FROM top_procs_1m WHERE ts < ?")
-        pruneMinuteRollups = try db.prepare("DELETE FROM rollup WHERE resolution = 60 AND ts < ?")
-        pruneMinuteLimits = try db.prepare("DELETE FROM limit_seconds WHERE resolution = 60 AND ts < ?")
+        // A minute row goes only once its hour has an hourly row: the rollup catch-up is capped at 48 h, so
+        // the last partial hour before a long absence can have minute rows and nothing else.
+        pruneMinuteRollups = try db.prepare("""
+            DELETE FROM rollup WHERE resolution = 60 AND ts < ? AND EXISTS (
+                SELECT 1 FROM rollup h WHERE h.machine_id = rollup.machine_id AND h.resolution = 3600
+                AND h.ts = rollup.ts - rollup.ts % 3600)
+            """)
+        pruneMinuteLimits = try db.prepare("""
+            DELETE FROM limit_seconds WHERE resolution = 60 AND ts < ? AND EXISTS (
+                SELECT 1 FROM rollup h WHERE h.machine_id = limit_seconds.machine_id AND h.resolution = 3600
+                AND h.ts = limit_seconds.ts - limit_seconds.ts % 3600)
+            """)
     }
 
     public var bufferedTicks: Int { buffer.count }
@@ -376,7 +386,7 @@ public final class SampleStore {
     }
 
     /// Minute rollups are kept longer than raw samples so recent reports keep their partial hours, but not
-    /// forever: they are about 98% of the rollup rows, and every hour they cover has an hourly row by then.
+    /// forever: they are about 98% of the rollup rows. Minute rows for an hour with no hourly row are kept.
     public func applyRetention(now: Double, days: Int = 30, minuteDays: Int = 90) throws {
         let start = Int64(now.rounded(.down))
         let cutoff = start - Int64(days) * 86_400
