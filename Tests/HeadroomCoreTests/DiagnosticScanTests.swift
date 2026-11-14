@@ -28,6 +28,14 @@ struct DiagnosticScanTests {
         #expect(found.map(\.file) == ["JetsamEvent-2026-11-14.ips", "x.hang", "y.spin"])
         #expect(found[0].ts == since.timeIntervalSince1970 + 60)
 
+        // Hang report names start with the app's name, so nothing from the file reaches the event.
+        for report in found {
+            let event = DiagnosticScanner.event(for: report)
+            #expect(event.kind == report.kind)
+            #expect(event.ts == report.ts)
+            #expect(event.payload.isEmpty)
+        }
+
         // The same files are not reported twice, even when the caller rescans from the same point.
         #expect(scanner.scan(since: since).isEmpty)
         try touch("z.hang", at: since.addingTimeInterval(240))

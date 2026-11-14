@@ -8,22 +8,31 @@ struct SamplingBenchmarkTests {
         var pipeline = SamplingPipeline(classifier: Classifier(rules: .defaults, currentUID: getuid()), config: HeadroomConfig())
         pipeline.discard()
 
-        let iterations = 1000
+        // The median of batch means, so one batch slowed by other tests running in parallel can't fail the run.
+        let batches = 10
+        let passesPerBatch = 100
         var recorded = 0
+        var batchMeans: [Duration] = []
         let clock = ContinuousClock()
-        let start = clock.now
-        for i in 0..<iterations {
-            let tick = pipeline.sample(
-                now: Double(i * 10), interval: 10, refreshSpace: i % 6 == 0, thermal: ThermalLevel.current())
-            if tick != nil { recorded += 1 }
+        for batch in 0..<batches {
+            let start = clock.now
+            for pass in 0..<passesPerBatch {
+                let i = batch * passesPerBatch + pass
+                let tick = pipeline.sample(
+                    now: Double(i * 10), interval: 10, refreshSpace: i % 6 == 0, thermal: ThermalLevel.current())
+                if tick != nil { recorded += 1 }
+            }
+            batchMeans.append((clock.now - start) / passesPerBatch)
         }
-        let mean = (clock.now - start) / iterations
-        #expect(recorded == iterations)
-        #expect(mean <= budget, "mean sampling pass \(mean)")
+        batchMeans.sort()
+        let median = (batchMeans[batches / 2 - 1] + batchMeans[batches / 2]) / 2
+        #expect(recorded == batches * passesPerBatch)
+        #expect(median <= budget, "median sampling pass \(median)")
     }
 
-    // Measured on an M-series dev machine with ~410 processes: 3.4–3.6 ms mean in a debug build (what
-    // `swift test` runs) and 1.7–1.9 ms in release. 2× the debug mean is over the 5 ms cap, so the cap applies.
+    // Measured on an M-series dev machine with ~410 processes, in a debug build (what `swift test` runs):
+    // 3.4–3.6 ms per pass as the mean of 1,000 and as the median of 10 batches of 100; 1.7–1.9 ms in release.
+    // 2× the debug value is over the 5 ms cap, so the cap applies.
     private let budget = Duration.milliseconds(5)
 }
 

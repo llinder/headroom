@@ -51,6 +51,20 @@ struct AgentTrackerTests {
         #expect(u.activeCount == 1)
     }
 
+    @Test func resetActivityMakesRunIdleButKeepsIt() {
+        var t = AgentTracker(activeCoreFraction: 0.05)
+        let root = id(10, 1, "claude")
+        var u = run(&t, [usage(root, cpu: 5)], now: 0)
+        u = run(&t, [usage(root, cpu: 5)], now: 10)
+        #expect(u.live[0].isActive)
+        t.resetActivity()
+        u = run(&t, [usage(root)], now: 20)
+        #expect(u.live.count == 1 && u.started.isEmpty && u.ended.isEmpty)
+        #expect(u.live[0].started == 0)
+        #expect(!u.live[0].isActive)
+        #expect(u.idleCount == 1)
+    }
+
     @Test func buildChildMakesActive() {
         var t = AgentTracker(activeCoreFraction: 0.05)
         let root = id(10, 1, "claude"), build = id(11, 10, "go")

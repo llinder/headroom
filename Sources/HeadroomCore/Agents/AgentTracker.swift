@@ -65,6 +65,12 @@ public struct AgentTracker {
         self.sampleInterval = sampleInterval
     }
 
+    /// Forgets recent CPU but keeps the runs, so an interval that wasn't activity (the machine was asleep)
+    /// can't hold a run active through the ring window.
+    public mutating func resetActivity() {
+        for key in runs.keys { runs[key]?.ring = [] }
+    }
+
     public mutating func update(
         processes: [ProcessUsage],
         groups: [ProcessKey: WorkloadGroup],

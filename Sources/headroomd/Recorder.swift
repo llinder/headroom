@@ -134,11 +134,17 @@ final class Recorder {
             store.recordEvent(kind: "thermal", ts: now, payload: ["level": String(level.rawValue)])
         }
 
-        // Sampled even when the tick is dropped, so every counter's next delta starts from here.
-        let sampled = pipeline.sample(
-            now: now, interval: elapsed, refreshSpace: tickCount % Self.spaceRefreshEvery == 0, thermal: level)
+        // A tick between the real sleep and the wake notification only moves the baselines, so neither the
+        // samples nor agent activity count the sleep. A nil tick still advanced every counter.
+        var sampled: Tick?
+        if asleep {
+            pipeline.discard()
+        } else {
+            sampled = pipeline.sample(
+                now: now, interval: elapsed, refreshSpace: tickCount % Self.spaceRefreshEvery == 0, thermal: level)
+        }
         let usage = readSelfUsage()
-        if !asleep, var tick = sampled {
+        if var tick = sampled {
             tick.selfCPU = usage.cpu
             tick.selfFootprint = usage.footprint
             store.append(tick)
@@ -166,6 +172,7 @@ final class Recorder {
     private func stop() {
         let now = Date().timeIntervalSince1970
         store.recordEvent(kind: "recorder_stop", ts: now, payload: [:])
+        // If this final flush fails, the spool records it drained are lost; accepted, as the spool is best effort.
         flushCycle(now: now)
         exit(0)
     }
@@ -235,7 +242,8 @@ final class Recorder {
 
     private func scanDiagnostics(now: Double) {
         for report in scanner.scan(since: nextScanSince) {
-            store.recordEvent(kind: report.kind, ts: report.ts, payload: ["file": report.file])
+            let event = DiagnosticScanner.event(for: report)
+            store.recordEvent(kind: event.kind, ts: event.ts, payload: event.payload)
         }
         nextScanSince = Date(timeIntervalSince1970: now - Self.scanOverlap)
     }

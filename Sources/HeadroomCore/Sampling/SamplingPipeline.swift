@@ -25,12 +25,13 @@ public struct SamplingPipeline {
     }
 
     /// Moves every counter baseline to now and drops the deltas, so an interval that shouldn't count as
-    /// activity (the machine was asleep) never reaches a tick.
+    /// activity (the machine was asleep) never reaches a tick or an agent run's activity window.
     public mutating func discard() {
         _ = cpu.sample(interval: 0)
         _ = memory.sample()
         _ = disk.sample(refreshSpace: false)
         _ = processes.sweep()
+        agents.resetActivity()
     }
 
     /// Nil when CPU, memory or disk can't be read, which for CPU includes the first call. Every sampler and the

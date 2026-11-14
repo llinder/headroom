@@ -125,6 +125,13 @@ public struct DiagnosticScanner {
         return found
     }
 
+    /// The event a report is recorded as. The file name stays out: hang reports are named after the app.
+    public static func event(
+        for report: (kind: String, ts: Double, file: String)
+    ) -> (kind: String, ts: Double, payload: [String: String]) {
+        (kind: report.kind, ts: report.ts, payload: [:])
+    }
+
     private static func kind(of name: String) -> String? {
         if name.hasPrefix("JetsamEvent-") && name.hasSuffix(".ips") { return "jetsam" }
         if name.hasSuffix(".hang") || name.hasSuffix(".spin") { return "hang" }
