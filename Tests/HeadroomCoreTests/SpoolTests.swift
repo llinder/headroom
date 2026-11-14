@@ -105,12 +105,15 @@ private func makeSpool() throws -> (Spool, URL) {
         let result = spool.drain()
         #expect(result.records.isEmpty)
         #expect(result.malformed == 0)
+        #expect(result.drainFailed)
         let raw = try String(contentsOf: spool.url, encoding: .utf8)
         #expect(raw.contains("keep me"))
 
         try FileManager.default.removeItem(at: ingesting)
-        _ = spool.drain()
-        #expect(spool.drain().records == [record])
+        #expect(!spool.drain().drainFailed)
+        let recovered = spool.drain()
+        #expect(recovered.records == [record])
+        #expect(!recovered.drainFailed)
     }
 
     @Test func appendRejectedWhenSpoolIsOversized() throws {

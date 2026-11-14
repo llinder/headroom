@@ -43,6 +43,7 @@ final class Recorder {
     private var coverageFrom = Date().timeIntervalSince1970
     private var lastRolledHour: Int64?
     private var lastLiveWarning = -Double.infinity
+    private var lastDrainWarning = -Double.infinity
 
     init(paths: Paths) throws {
         try paths.ensureRoot()
@@ -196,6 +197,10 @@ final class Recorder {
     private func flushCycle(now: Double) {
         let drained = spool.drain()
         if drained.malformed > 0 { log.warning("skipped \(drained.malformed) malformed spool lines") }
+        if drained.drainFailed && now - lastDrainWarning >= Double(Self.hour) {
+            lastDrainWarning = now
+            log.error("spool batch unreadable; tags, commands and agent sessions are waiting in the spool")
+        }
         store.ingest(drained.records)
         do {
             try store.flush()

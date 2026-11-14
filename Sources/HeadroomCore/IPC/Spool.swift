@@ -102,14 +102,15 @@ public struct Spool: Sendable {
 
     /// Drains one cycle behind: the previous cycle's renamed file is read first, so a
     /// writer that opened the file just before the rename has had a full cycle to finish.
-    /// If that file can't be read, nothing is rotated, so an unread batch is never overwritten.
-    public func drain() -> (records: [SpoolRecord], malformed: Int) {
+    /// If that file can't be read, nothing is rotated, so an unread batch is never overwritten, and
+    /// `drainFailed` says so: otherwise a stuck spool would look the same as an empty one.
+    public func drain() -> (records: [SpoolRecord], malformed: Int, drainFailed: Bool) {
         var records: [SpoolRecord] = []
         var malformed = 0
 
         switch readIngesting() {
         case .failed:
-            return ([], 0)
+            return ([], 0, true)
         case .missing:
             break
         case let .data(data):
@@ -127,7 +128,7 @@ public struct Spool: Sendable {
         }
 
         rename(url.path, ingestingPath)
-        return (records, malformed)
+        return (records, malformed, false)
     }
 
     private enum IngestingRead {
