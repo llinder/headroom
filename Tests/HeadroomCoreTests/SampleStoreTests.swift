@@ -348,19 +348,63 @@ private func run(_ pid: Int32, cpu: Double, footprint: UInt64, write: UInt64 = 0
         #expect(try f.int("SELECT COUNT(*) FROM agent_runs") == 0)
     }
 
-    @Test func coverageAccumulates() throws {
+    @Test func refreshCoverageCountsSamples() throws {
         let f = try Fixture()
-        let g1 = DateInterval(start: Date(timeIntervalSince1970: 1_000), end: Date(timeIntervalSince1970: 1_600))
-        let g2 = DateInterval(start: Date(timeIntervalSince1970: 5_000), end: Date(timeIntervalSince1970: 5_300))
-        try f.store.recordCoverage(day: "2026-11-14", recorded: 3_600, asleep: 100, gap: 600, gaps: [g1])
-        try f.store.recordCoverage(day: "2026-11-14", recorded: 60, asleep: 0, gap: 300, gaps: [g2])
-        try f.store.recordCoverage(day: "2026-11-15", recorded: 60, asleep: 0, gap: 0, gaps: [])
-        let rows = try f.rows(
-            "SELECT day, seconds_recorded, seconds_asleep, seconds_gap, gaps FROM coverage WHERE machine_id='m1' ORDER BY day",
-            columns: 5)
+        for i in 0..<6 { f.store.append(tick(base + Int64(i) * 10)) }
+        f.store.append(tick(base + 86_400))
+        try f.store.flush()
+        try f.store.refreshCoverage(day: "d1", dayStart: Double(base), dayEnd: Double(base + 86_400), now: Double(base + 90_000))
+        #expect(try f.rows("SELECT seconds_recorded, seconds_asleep, seconds_gap, gaps FROM coverage WHERE day='d1'", columns: 4)
+            == [["60.0", "0.0", "0.0", "[]"]])
+    }
+
+    @Test func refreshCoverageClipsSleepAndGaps() throws {
+        let f = try Fixture()
+        let day1 = base, day2 = base + 86_400, day2End = base + 2 * 86_400
+        f.store.recordEvent(kind: "sleep", ts: Double(day1 + 23 * 3600), payload: [:])
+        f.store.recordEvent(kind: "wake", ts: Double(day2 + 7 * 3600), payload: [:])
+        f.store.recordEvent(kind: "gap", ts: Double(day2 + 8 * 3600),
+                            payload: ["start": String(day2 - 600), "end": String(day2 + 300)])
+        f.store.recordEvent(kind: "gap", ts: Double(day2), payload: ["start": "garbage", "end": "1"])
+        // A sleep still open at `now` runs to now, not to the end of the day.
+        f.store.recordEvent(kind: "sleep", ts: Double(day2 + 20 * 3600), payload: [:])
+        try f.store.flush()
+
+        let now = Double(day2 + 21 * 3600)
+        try f.store.refreshCoverage(day: "d1", dayStart: Double(day1), dayEnd: Double(day2), now: now)
+        try f.store.refreshCoverage(day: "d2", dayStart: Double(day2), dayEnd: Double(day2End), now: now)
+        let rows = try f.rows("SELECT day, seconds_asleep, seconds_gap, gaps FROM coverage ORDER BY day", columns: 4)
         #expect(rows == [
-            ["2026-11-14", "3660.0", "100.0", "900.0", "[[1000,1600],[5000,5300]]"],
-            ["2026-11-15", "60.0", "0.0", "0.0", "[]"],
+            ["d1", "3600.0", "600.0", "[[\(day2 - 600),\(day2)]]"],
+            ["d2", "\(Double(8 * 3600))", "300.0", "[[\(day2),\(day2 + 300)]]"],
         ])
+    }
+
+    @Test func refreshCoverageIsIdempotent() throws {
+        let f = try Fixture()
+        for i in 0..<3 { f.store.append(tick(base + Int64(i) * 10)) }
+        f.store.recordEvent(kind: "sleep", ts: Double(base + 100), payload: [:])
+        f.store.recordEvent(kind: "wake", ts: Double(base + 400), payload: [:])
+        f.store.recordEvent(kind: "gap", ts: Double(base + 500), payload: ["start": String(base + 450), "end": String(base + 500)])
+        try f.store.flush()
+        let sql = "SELECT * FROM coverage"
+        try f.store.refreshCoverage(day: "d", dayStart: Double(base), dayEnd: Double(base + 86_400), now: Double(base + 1000))
+        let first = try f.rows(sql, columns: 6)
+        try f.store.refreshCoverage(day: "d", dayStart: Double(base), dayEnd: Double(base + 86_400), now: Double(base + 1000))
+        #expect(try f.rows(sql, columns: 6) == first)
+        #expect(first == [["m1", "d", "30.0", "300.0", "50.0", "[[\(base + 450),\(base + 500)]]"]])
+    }
+
+    @Test func rewritesKeepOneGroupRowAndEarliestSession() throws {
+        let f = try Fixture()
+        let groups: [WorkloadGroup: GroupTotals] = [.ide: GroupTotals(cpuSeconds: 1, footprint: 1, diskWriteBytes: 1, procCount: 1)]
+        f.store.append(tick(base, groups: groups))
+        f.store.ingest([.agentSession(ts: Double(base + 20), tool: "claude", sessionId: "s", model: nil, rootPid: 9, rootStart: 9)])
+        try f.store.flush()
+        f.store.append(tick(base, groups: groups))
+        f.store.ingest([.agentSession(ts: Double(base + 5), tool: "claude", sessionId: "s", model: "opus", rootPid: 9, rootStart: 9)])
+        try f.store.flush()
+        #expect(try f.int("SELECT COUNT(*) FROM group_samples") == 1)
+        #expect(try f.rows("SELECT model, first_seen FROM agent_run_sessions", columns: 2) == [["opus", "\(base + 5)"]])
     }
 }

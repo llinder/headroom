@@ -177,8 +177,11 @@ public final class SampleStore {
     private let upsertRunUsage: Statement
     private let setHeartbeat: Statement
     private let selectHour: Statement
-    private let selectCoverageGaps: Statement
-    private let upsertCoverage: Statement
+    private let deleteGroups: Statement
+    private let countSamples: Statement
+    private let selectSleepWake: Statement
+    private let selectGapEvents: Statement
+    private let replaceCoverage: Statement
     private let pruneSamples: Statement
     private let pruneGroups: Statement
     private let pruneTop: Statement
@@ -228,7 +231,10 @@ public final class SampleStore {
             """)
         selectRunId = try db.prepare("SELECT run_id FROM agent_runs WHERE machine_id=? AND root_pid=? AND root_start=?")
         insertSession = try db.prepare("""
-            INSERT OR IGNORE INTO agent_run_sessions(run_id, session_id, model, first_seen) VALUES(?,?,?,?)
+            INSERT INTO agent_run_sessions(run_id, session_id, model, first_seen) VALUES(?,?,?,?)
+            ON CONFLICT(run_id, session_id) DO UPDATE SET
+                first_seen = MIN(first_seen, excluded.first_seen),
+                model = COALESCE(model, excluded.model)
             """)
         upsertRunUsage = try db.prepare("""
             INSERT OR REPLACE INTO run_usage(run_id, ts, cpu_seconds, peak_footprint, disk_write, active_seconds)
@@ -240,15 +246,21 @@ public final class SampleStore {
                    ssd_write, disk_free, active_agents, limit_flags
             FROM samples WHERE machine_id=? AND ts>=? AND ts<? ORDER BY ts
             """)
-        selectCoverageGaps = try db.prepare("SELECT gaps FROM coverage WHERE machine_id=? AND day=?")
-        upsertCoverage = try db.prepare("""
-            INSERT INTO coverage(machine_id, day, seconds_recorded, seconds_asleep, seconds_gap, gaps)
+        deleteGroups = try db.prepare("DELETE FROM group_samples WHERE machine_id=? AND ts=?")
+        countSamples = try db.prepare("SELECT COUNT(*) FROM samples WHERE machine_id=? AND ts>=? AND ts<?")
+        // Starts at the last sleep before the day, so a sleep that began on an earlier day is still paired.
+        selectSleepWake = try db.prepare("""
+            SELECT ts, kind FROM events
+            WHERE machine_id=?1 AND kind IN ('sleep', 'wake') AND ts < ?3
+              AND ts >= COALESCE(
+                  (SELECT MAX(ts) FROM events WHERE machine_id=?1 AND kind='sleep' AND ts < ?2), ?2)
+            ORDER BY ts
+            """)
+        // A gap event's own ts says nothing about the interval it describes, so all of them are read.
+        selectGapEvents = try db.prepare("SELECT payload FROM events WHERE machine_id=? AND kind='gap'")
+        replaceCoverage = try db.prepare("""
+            INSERT OR REPLACE INTO coverage(machine_id, day, seconds_recorded, seconds_asleep, seconds_gap, gaps)
             VALUES(?,?,?,?,?,?)
-            ON CONFLICT(machine_id, day) DO UPDATE SET
-                seconds_recorded = seconds_recorded + excluded.seconds_recorded,
-                seconds_asleep = seconds_asleep + excluded.seconds_asleep,
-                seconds_gap = seconds_gap + excluded.seconds_gap,
-                gaps = excluded.gaps
             """)
         // Raw tables are pruned for every machine in the file, including ones the DB was copied from.
         pruneSamples = try db.prepare("DELETE FROM samples WHERE ts < ?")
@@ -264,22 +276,22 @@ public final class SampleStore {
     }
 
     public func ingest(_ records: [SpoolRecord]) {
-        for r in records {
+        enqueue(records.map { r in
             switch r {
             case let .tag(ts, text):
-                enqueue(.event(ts: Self.seconds(ts), kind: "tag", payload: Self.json(["text": text])))
+                .event(ts: Self.seconds(ts), kind: "tag", payload: Self.json(["text": text]))
             case let .command(ts, exe, seconds):
-                enqueue(.event(ts: Self.seconds(ts), kind: "command", payload: Self.json(CommandPayload(exe: exe, seconds: seconds))))
+                .event(ts: Self.seconds(ts), kind: "command", payload: Self.json(CommandPayload(exe: exe, seconds: seconds)))
             case let .agentSession(ts, tool, sessionId, model, rootPid, rootStart):
-                enqueue(.session(
+                .session(
                     ts: Self.seconds(ts), tool: tool, sessionId: sessionId, model: model,
-                    root: ProcessKey(pid: rootPid, start: rootStart)))
+                    root: ProcessKey(pid: rootPid, start: rootStart))
             }
-        }
+        })
     }
 
     public func recordEvent(kind: String, ts: Double, payload: [String: String]) {
-        enqueue(.event(ts: Self.seconds(ts), kind: kind, payload: Self.json(payload)))
+        enqueue([.event(ts: Self.seconds(ts), kind: kind, payload: Self.json(payload))])
     }
 
     public func flush() throws {
@@ -325,34 +337,76 @@ public final class SampleStore {
         }
     }
 
-    /// Adds to the day's totals; `day` is the caller's local-time YYYY-MM-DD.
-    public func recordCoverage(day: String, recorded: Double, asleep: Double, gap: Double, gaps: [DateInterval]) throws {
+    /// Recomputes the day's coverage row from `samples` and the sleep, wake and gap events, and replaces
+    /// it, so calling it again (after a crash, or for a day still in progress) never double counts.
+    /// `day` is the caller's local-time YYYY-MM-DD and [dayStart, dayEnd) its epoch bounds.
+    public func refreshCoverage(
+        day: String, dayStart: Double, dayEnd: Double, now: Double = Date().timeIntervalSince1970
+    ) throws {
+        func clipped(_ start: Double, _ end: Double) -> (Double, Double)? {
+            let s = max(start, dayStart), e = min(end, dayEnd)
+            return e > s ? (s, e) : nil
+        }
+
         try db.transaction {
-            selectCoverageGaps.reset()
-            selectCoverageGaps.bind(1, machineId)
-            selectCoverageGaps.bind(2, day)
-            var all: [[Int64]] = []
-            if try selectCoverageGaps.step() {
-                all = (try? JSONDecoder().decode([[Int64]].self, from: Data(selectCoverageGaps.string(0).utf8))) ?? []
+            countSamples.reset()
+            countSamples.bind(1, machineId)
+            countSamples.bind(2, dayStart)
+            countSamples.bind(3, dayEnd)
+            let recorded = try countSamples.step() ? Double(countSamples.int64(0)) * interval : 0
+            countSamples.reset()
+
+            var asleep = 0.0
+            var sleepStart: Double?
+            selectSleepWake.reset()
+            selectSleepWake.bind(1, machineId)
+            selectSleepWake.bind(2, dayStart)
+            selectSleepWake.bind(3, dayEnd)
+            while try selectSleepWake.step() {
+                let ts = selectSleepWake.double(0)
+                if selectSleepWake.string(1) == "sleep" {
+                    // A repeated sleep without a wake between keeps the first.
+                    if sleepStart == nil { sleepStart = ts }
+                } else if let start = sleepStart {
+                    if let c = clipped(start, ts) { asleep += c.1 - c.0 }
+                    sleepStart = nil
+                }
             }
-            selectCoverageGaps.reset()
-            all += gaps.map { [Self.seconds($0.start.timeIntervalSince1970), Self.seconds($0.end.timeIntervalSince1970)] }
-            let encoded = Self.json(all)
-            try step(upsertCoverage) {
-                $0.bind(1, machineId)
-                $0.bind(2, day)
-                $0.bind(3, recorded)
-                $0.bind(4, asleep)
-                $0.bind(5, gap)
-                $0.bind(6, encoded)
+            selectSleepWake.reset()
+            if let start = sleepStart, let c = clipped(start, min(dayEnd, now)) { asleep += c.1 - c.0 }
+
+            var gaps: [(Double, Double)] = []
+            selectGapEvents.reset()
+            selectGapEvents.bind(1, machineId)
+            while try selectGapEvents.step() {
+                guard let payload = try? JSONDecoder().decode(
+                    [String: String].self, from: Data(selectGapEvents.string(0).utf8)),
+                    let start = payload["start"].flatMap(Double.init),
+                    let end = payload["end"].flatMap(Double.init),
+                    let gap = clipped(start, end)
+                else { continue }
+                gaps.append(gap)
+            }
+            selectGapEvents.reset()
+            gaps.sort { $0.0 < $1.0 }
+
+            let gapSeconds = gaps.reduce(0) { $0 + $1.1 - $1.0 }
+            let gapsJSON = Self.json(gaps.map { [Self.seconds($0.0), Self.seconds($0.1)] })
+            try step(replaceCoverage) { s in
+                s.bind(1, machineId)
+                s.bind(2, day)
+                s.bind(3, recorded)
+                s.bind(4, asleep)
+                s.bind(5, gapSeconds)
+                s.bind(6, gapsJSON)
             }
         }
     }
 
     // MARK: - Writing
 
-    private func enqueue(_ p: Pending) {
-        pending.append(p)
+    private func enqueue(_ batch: [Pending]) {
+        pending.append(contentsOf: batch)
         if pending.count > Self.maxPendingRecords { pending.removeFirst(pending.count - Self.maxPendingRecords) }
     }
 
@@ -391,6 +445,11 @@ public final class SampleStore {
             s.bind(30, Int64(t.agents.idleCount))
             s.bind(31, t.selfCPU)
             s.bind(32, Int64(clamping: t.selfFootprint))
+        }
+        // Matches the samples REPLACE: rewriting a tick replaces its group rows instead of adding to them.
+        try step(deleteGroups) { s in
+            s.bind(1, machineId)
+            s.bind(2, ts)
         }
         for (group, totals) in t.groups.sorted(by: { $0.key.rawValue < $1.key.rawValue }) where totals.procCount > 0 {
             try step(insertGroup) { s in
