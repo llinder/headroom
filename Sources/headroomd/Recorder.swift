@@ -85,6 +85,13 @@ final class Recorder {
             log.error("reading meta failed: \(String(describing: error), privacy: .public)")
         }
         let (lastSleep, lastWake) = GapDetector.lastSleepWake()
+        do {
+            if let wake = try store.closeOpenSleep(kernelWake: lastWake, now: now) {
+                log.notice("closed a sleep left open by the last run, waking at \(Int64(wake))")
+            }
+        } catch {
+            log.error("checking for an open sleep failed: \(String(describing: error), privacy: .public)")
+        }
         if let gap = GapDetector.startupGap(
             lastHeartbeat: heartbeat, now: now, bootTime: GapDetector.bootTime(), lastSleep: lastSleep,
             lastWake: lastWake)

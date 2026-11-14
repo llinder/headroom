@@ -319,6 +319,42 @@ private func run(_ pid: Int32, cpu: Double, footprint: UInt64, write: UInt64 = 0
         #expect(ended == [["1", "1320"], ["2", "5000"], ["3", "1500"], ["4", "open"]])
     }
 
+    // A recorder stopped while the machine slept never saw the wake; without one, coverage counts it asleep.
+    @Test func openSleepIsClosedOnStart() throws {
+        let wakes = "SELECT COUNT(*) FROM events WHERE kind='wake'"
+        let lastWake = "SELECT MAX(ts) FROM events WHERE kind='wake'"
+
+        let f = try Fixture()
+        f.store.recordEvent(kind: "sleep", ts: Double(base), payload: [:])
+        try f.store.flush()
+        #expect(try f.store.closeOpenSleep(kernelWake: Double(base + 600), now: Double(base + 900)) == Double(base + 600))
+        try f.store.flush()
+        #expect(try f.int(lastWake) == base + 600)
+
+        // Already closed: nothing more is written.
+        #expect(try f.store.closeOpenSleep(kernelWake: Double(base + 600), now: Double(base + 1200)) == nil)
+        try f.store.flush()
+        #expect(try f.int(wakes) == 1)
+
+        // The kernel's wake predates the open sleep (a reboot since), so the wake is now.
+        f.store.recordEvent(kind: "sleep", ts: Double(base + 2000), payload: [:])
+        try f.store.flush()
+        #expect(try f.store.closeOpenSleep(kernelWake: Double(base + 600), now: Double(base + 2500)) == Double(base + 2500))
+
+        // No wake since boot at all.
+        let g = try Fixture()
+        g.store.recordEvent(kind: "sleep", ts: Double(base), payload: [:])
+        try g.store.flush()
+        #expect(try g.store.closeOpenSleep(kernelWake: nil, now: Double(base + 300)) == Double(base + 300))
+    }
+
+    @Test func noSleepEventsMeansNoWake() throws {
+        let f = try Fixture()
+        #expect(try f.store.closeOpenSleep(kernelWake: Double(base), now: Double(base + 10)) == nil)
+        try f.db.exec("INSERT INTO events VALUES('other-machine', \(base), 'sleep', '{}')")
+        #expect(try f.store.closeOpenSleep(kernelWake: Double(base + 5), now: Double(base + 10)) == nil)
+    }
+
     // A tick that couldn't be sampled still reports which runs ended; the store closes them without usage.
     @Test func runEndedOnAnUnsampledTickIsClosed() throws {
         let f = try Fixture()

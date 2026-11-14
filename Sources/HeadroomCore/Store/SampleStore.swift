@@ -304,6 +304,24 @@ public final class SampleStore {
         enqueue(roots.map { .runEnded(ts: Self.seconds(ts), root: $0) })
     }
 
+    /// Queues a wake when the newest stored sleep/wake event is a sleep: a recorder stopped during sleep never
+    /// saw the wake, and coverage would count everything since as asleep. The wake is the kernel's last wake
+    /// when that came after the sleep, otherwise now (the machine was rebooted, or the time is unknown).
+    /// Reads only what's committed, so call it before queueing other sleep or wake events. Returns the wake time.
+    @discardableResult
+    public func closeOpenSleep(kernelWake: Double?, now: Double) throws -> Double? {
+        let stmt = try db.prepare("""
+            SELECT ts, kind FROM events WHERE machine_id=? AND kind IN ('sleep', 'wake')
+            ORDER BY ts DESC, rowid DESC LIMIT 1
+            """)
+        stmt.bind(1, machineId)
+        guard try stmt.step(), stmt.string(1) == "sleep" else { return nil }
+        let slept = Double(stmt.int64(0))
+        let wake = kernelWake.map { $0 > slept ? min($0, now) : now } ?? now
+        recordEvent(kind: "wake", ts: wake, payload: [:])
+        return wake
+    }
+
     public func recordEvent(kind: String, ts: Double, payload: [String: String]) {
         enqueue([.event(ts: Self.seconds(ts), kind: kind, payload: Self.json(payload))])
     }
