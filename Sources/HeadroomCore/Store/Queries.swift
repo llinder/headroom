@@ -85,10 +85,10 @@ public struct Queries {
         }.compactMap { $0 }
     }
 
-    /// Runs started in the range, and the CPU seconds every run used inside it.
+    /// Runs active at any point in the range, and the CPU seconds they used inside it, so both describe one set.
     public func agentRunTotals(machineId: String, from: Date, to: Date) throws(DatabaseError) -> (runs: Int, cpuSeconds: Double) {
         let runs = try rows(
-            "SELECT COUNT(*) FROM agent_runs WHERE machine_id=? AND started>=? AND started<?"
+            "SELECT COUNT(*) FROM agent_runs WHERE machine_id=? AND (ended IS NULL OR ended>=?) AND started<?"
         ) { s in bindRange(s, machineId, from, to) } read: { Int($0.int64(0)) }.first ?? 0
         let cpu = try rows(
             """
@@ -97,6 +97,24 @@ public struct Queries {
             """
         ) { s in bindRange(s, machineId, from, to) } read: { $0.double(0) }.first ?? 0
         return (runs, cpu)
+    }
+
+    /// Bytes written to the drive per local day, summed from the 10 s samples so every tick counts once. Only days
+    /// still inside raw retention appear.
+    public func dailySSDWriteBytes(
+        machineId: String, from: Date, to: Date, calendar: Calendar = .current
+    ) throws(DatabaseError) -> [String: Double] {
+        let hours = try rows(
+            """
+            SELECT ts - ts % 3600, SUM(ssd_write) FROM samples
+            WHERE machine_id=? AND ts>=? AND ts<? AND ssd_write IS NOT NULL GROUP BY 1
+            """
+        ) { s in bindRange(s, machineId, from, to) } read: { (ts: $0.int64(0), bytes: $0.double(1)) }
+        var byDay: [String: Double] = [:]
+        for hour in hours {
+            byDay[LocalDay(containing: Double(hour.ts), calendar: calendar).name, default: 0] += hour.bytes
+        }
+        return byDay
     }
 
     /// Epoch seconds of the recorder's last flush.

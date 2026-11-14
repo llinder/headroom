@@ -13,6 +13,10 @@ enum Report {
             err("no data yet — run `headroom install`")
             return 1
         }
+        if let since, until == nil, calendar.startOfDay(for: since) > calendar.startOfDay(for: now) {
+            err("headroom: --since is in the future")
+            return 1
+        }
         guard let range = range(since: since, until: until, now: now, calendar: calendar) else {
             err("headroom: --since must be on or before --until")
             return 1

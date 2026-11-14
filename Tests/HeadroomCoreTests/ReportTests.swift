@@ -77,8 +77,6 @@ private final class ReportFixture {
                 try insert(rollup, [id, ts, Metric.memDemand.rawValue, 20 * gib, 28 * gib, 26 * gib])
                 try insert(rollup, [id, ts, Metric.cpuBusy.rawValue, 0.3, 0.95, 0.8])
                 try insert(rollup, [id, ts, Metric.diskFree.rawValue, 200e9 - Double(d) * 1e9, 200e9, 200e9])
-                // 38 GB a day: 8 recorded hours are 2,880 ten-second ticks.
-                try insert(rollup, [id, ts, Metric.ssdWrite.rawValue, 38e9 / 2880, 1e8, 1e8])
             }
             try insert("INSERT INTO limit_seconds VALUES(?,3600,?,?,?)", [id, at(d, 10), "memoryLimited", 1800.0])
             try insert("INSERT INTO limit_seconds VALUES(?,3600,?,?,?)", [id, at(d, 11), "cpuSaturated", 2400.0])
@@ -90,7 +88,10 @@ private final class ReportFixture {
                     "INSERT INTO top_procs_1m VALUES(?,?,?,?,?,?,?)", [id, at(d, 12), "cpu", rank, name, "other", 1.0])
             }
             try insert("INSERT INTO events VALUES(?,?,?,?)", [id, at(d, 13), "command", #"{"exe":"secret-repo","seconds":40}"#])
-            try insert("INSERT INTO samples(machine_id, ts, self_cpu, self_footprint) VALUES(?,?,?,?)", [id, at(d, 9), 0.005, 9_437_184])
+            // 38 GB a day from two ticks of unequal size, so an average of averages would come out wrong.
+            let sample = "INSERT INTO samples(machine_id, ts, self_cpu, self_footprint, ssd_write) VALUES(?,?,?,?,?)"
+            try insert(sample, [id, at(d, 9), 0.005, 9_437_184, 30_000_000_000])
+            try insert(sample, [id, at(d, 9) + 10, 0.005, 9_437_184, 8_000_000_000])
         }
         try insert("INSERT INTO events VALUES(?,?,?,?)", [id, at(2, 14), "tag", #"{"text":"load test"}"#])
         for kind in ["thermal", "jetsam", "hang", "hang"] {
@@ -102,12 +103,19 @@ private final class ReportFixture {
             "INSERT INTO agent_runs(machine_id, tool, root_pid, root_start, started) VALUES(?,?,?,?,?)",
             [id, "claude", 42, 1, at(1, 9)])
         try insert("INSERT INTO run_usage VALUES((SELECT MAX(run_id) FROM agent_runs),?,?,?,?,?)", [at(1, 9), 3600.0, 0, 0, 0.0])
+        try insert(
+            "INSERT INTO agent_run_sessions VALUES((SELECT MAX(run_id) FROM agent_runs),?,?,?)",
+            ["sess-SECRET-123", "model-SECRET", at(1, 9)])
     }
 
-    func model(baseline: Baseline?, from: Int64 = rangeStart, to: Int64 = rangeEnd) throws -> ReportModel {
+    func exec(_ sql: String) throws { try db.exec(sql) }
+
+    func model(
+        baseline: Baseline?, from: Int64 = rangeStart, to: Int64 = rangeEnd, config: HeadroomConfig = HeadroomConfig()
+    ) throws -> ReportModel {
         try ReportModel.build(
             queries: Queries(db: db), machineId: thisMachine.machineId, from: Date(timeIntervalSince1970: Double(from)),
-            to: Date(timeIntervalSince1970: Double(to)), config: HeadroomConfig(), tiers: .defaults, baseline: baseline,
+            to: Date(timeIntervalSince1970: Double(to)), config: config, tiers: .defaults, baseline: baseline,
             calendar: utc(), now: now, currentMachine: thisMachine)
     }
 
@@ -156,7 +164,7 @@ private func fullText(_ doc: PDFDocument) -> String {
     @Test func comparisonRows() throws {
         let f = try ReportFixture()
         let rows = try #require(try f.model(baseline: baseline).comparison)
-        #expect(rows.map(\.label) == ["Cores", "Memory", "Peak memory demand", "Typical CPU busy (p95)", "Disk used", "Agents at once"])
+        #expect(rows.map(\.label) == ["Cores", "Memory", "Peak memory demand", "Busiest-hour CPU, median day", "Disk used", "Agents at once"])
         #expect(rows[0].thisMachine == "12")
         #expect(rows[0].reference == "16")
         #expect(rows[0].previousMachine == "10")
@@ -170,7 +178,10 @@ private func fullText(_ doc: PDFDocument) -> String {
     @Test func privacyNoProcessNames() throws {
         let f = try ReportFixture()
         let all = fullText(try f.render(try f.model(baseline: baseline)))
-        for name in ["Slack", "Google Chrome", "secret-repo", "hang.ips", "Browsers", "Communication"] {
+        for name in [
+            "Slack", "Google Chrome", "secret-repo", "hang.ips", "Browsers", "Communication", "sess-SECRET-123",
+            "model-SECRET", "claude",
+        ] {
             #expect(!all.contains(name), "\(name) leaked into the report")
         }
         #expect(all.contains("Everyday apps"))
@@ -192,6 +203,43 @@ private func fullText(_ doc: PDFDocument) -> String {
         #expect(abs(m.appendix.ssdWriteTBPerYear - 13.87) < 1e-6)
         let doc = try f.render(m)
         #expect(text(doc.page(at: doc.pageCount - 1)).contains("At this rate the drive absorbs 13.9 TB of writes a year."))
+    }
+
+    @Test func ssdProjectionNeedsSevenDays() throws {
+        let f = try ReportFixture(days: 6, secondMachine: false)
+        let m = try f.model(baseline: nil)
+        #expect(m.appendix.ssdDays == 6)
+        let appendix = text(try f.render(m).page(at: 2))
+        #expect(!appendix.contains("At this rate"))
+        #expect(appendix.contains("Drive writes were recorded on 6 days; a yearly projection needs at least 7."))
+    }
+
+    @Test func agentRunsCountedWhileActive() throws {
+        let f = try ReportFixture(secondMachine: false)
+        let id = thisMachine.machineId
+        // Started before the range and still running: counted. Ended before the range: not.
+        try f.exec("INSERT INTO agent_runs(machine_id, tool, root_pid, root_start, started) VALUES('\(id)', 'codex', 7, 1, \(rangeStart - 86_400))")
+        try f.exec(
+            "INSERT INTO agent_runs(machine_id, tool, root_pid, root_start, started, ended) VALUES('\(id)', 'codex', 8, 1, \(rangeStart - 86_400), \(rangeStart - 60))")
+        #expect(try f.model(baseline: nil).appendix.agentRunCount == 2)
+    }
+
+    @Test func thresholdsPluralize() throws {
+        var config = HeadroomConfig()
+        config.workdayMinAwakeSeconds = 3600
+        config.limits.memoryLimitedDayMinSeconds = 60
+        let a = try ReportFixture(days: 1, secondMachine: false).model(baseline: nil, config: config).appendix
+        #expect(a.workdayDefinition.contains("at least 1 hour of awake time"))
+        #expect(a.thresholds.contains { $0.contains("after 1 minute of that") })
+        #expect(a.thresholds.contains { $0.contains("at least 1 hour of samples") })
+        let defaults = try ReportFixture(days: 1, secondMachine: false).model(baseline: nil).appendix
+        #expect(defaults.thresholds.contains { $0.contains("after 15 minutes of that") })
+    }
+
+    @Test func groupPeaksReadAsUpperBounds() throws {
+        let f = try ReportFixture(secondMachine: false)
+        let appendix = text(try f.render(try f.model(baseline: nil)).page(at: 2))
+        #expect(appendix.contains("Everyday apps: 8.3 CPU hours, up to 5.6 GB of memory."))
     }
 
     @Test func appendixNotes() throws {
@@ -239,7 +287,34 @@ private func fullText(_ doc: PDFDocument) -> String {
         #expect(m.verdicts.isEmpty)
         let doc = try f.render(m)
         #expect(doc.pageCount == 3)
-        #expect(text(doc.page(at: 0)).contains("Not enough data in this range yet."))
+        let first = text(doc.page(at: 0))
+        #expect(first.contains("Not enough data in this range yet."))
+        // No recommendation without evidence: the spec box would otherwise claim "8 cores are enough".
+        #expect(!first.contains("Recommended:"))
+        #expect(!first.contains("cores are enough"))
+    }
+
+    @Test func capacityBarsOnlyForJudgedLevels() throws {
+        let f = try ReportFixture(secondMachine: false)
+        try f.exec("INSERT INTO agent_histogram VALUES('\(thisMachine.machineId)', \(at(1, 9)), 3, 600, 600, 0)")
+        #expect(try f.model(baseline: nil).capacityBars.map(\.0) == [1, 2])
+
+        try f.exec("DELETE FROM agent_histogram WHERE active_agents=2")
+        let thin = try f.model(baseline: nil)
+        #expect(thin.capacitySentence == "Not enough AI agent activity recorded yet to measure agent capacity.")
+        #expect(thin.capacityBars.isEmpty)
+        let picture = text(try f.render(thin).page(at: 1))
+        #expect(picture.contains("Not enough AI agent activity recorded yet."))
+        #expect(!picture.contains("1 agent"))
+    }
+
+    @Test func axisSurvivesDegenerateMaximums() {
+        for maximum in [Double.nan, .infinity, -.infinity, 0, -5, .leastNonzeroMagnitude, .greatestFiniteMagnitude] {
+            let axis = Axis(maximum: maximum)
+            #expect(axis.step > 0 && axis.step.isFinite)
+            #expect(axis.top.isFinite)
+            #expect(axis.ticks.count <= 12)
+        }
     }
 
     @Test func chartsCarryGapsAndTags() throws {

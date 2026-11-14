@@ -82,6 +82,10 @@ public enum PDFReport {
         c.text("AI agents", bodyBold, after: 4)
         c.text(m.capacitySentence, verdict, after: 28)
 
+        // A recommendation needs the same evidence as the verdicts; without a workday it would claim conclusions
+        // ("8 cores are enough") the page just said it can't draw.
+        guard !m.verdicts.isEmpty else { return }
+
         let padding: CGFloat = 16
         let inner = c.width - 2 * padding
         let reasonsHeight = m.spec.reasons.reduce(0) { $0 + Typeset.height($1, body, width: inner) + 6 }
@@ -183,7 +187,7 @@ public enum PDFReport {
             for group in a.groups {
                 c.text(
                     "\(group.0.displayName): \(Wording.decimal(group.cpuHours, places: 1)) CPU hours, "
-                        + "peak \(Wording.decimal(group.peakMemoryGB, places: 1)) GB of memory.", body, after: 2)
+                        + "up to \(Wording.decimal(group.peakMemoryGB, places: 1)) GB of memory.", body, after: 2)
             }
             c.space(4)
         }
@@ -194,9 +198,13 @@ public enum PDFReport {
             body)
 
         c.text("Drive writes", bodyBold, after: 3)
-        if a.ssdMeasured {
+        if a.ssdDays >= Appendix.minProjectionDays {
             c.text("The drive took \(Wording.decimal(a.ssdWriteGBPerDay, places: 1)) GB of writes a day on average.", body, after: 2)
             c.text("At this rate the drive absorbs \(Wording.decimal(a.ssdWriteTBPerYear, places: 1)) TB of writes a year.", body)
+        } else if a.ssdDays > 0 {
+            c.text(
+                "Drive writes were recorded on \(Wording.plural(a.ssdDays, "day")); a yearly projection needs at least \(Appendix.minProjectionDays).",
+                body)
         } else {
             c.text("No drive writes were recorded in this range.", body)
         }

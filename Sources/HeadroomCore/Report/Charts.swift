@@ -97,7 +97,8 @@ struct Axis {
     let top: Double
 
     init(maximum: Double, ceiling: Double = .infinity) {
-        let target = maximum > 0 ? maximum * 1.05 : 1
+        // Non-finite, zero, negative or subnormal data would make a zero step and an endless stride, so it gets a unit span.
+        let target = maximum.isNormal && maximum > 0 ? min(maximum, 1e300) * 1.05 : 1
         let raw = target / 4
         let magnitude = pow(10, (log10(raw)).rounded(.down))
         let fraction = raw / magnitude

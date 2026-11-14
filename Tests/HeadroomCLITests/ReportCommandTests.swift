@@ -94,6 +94,13 @@ private final class Fixture {
         #expect(f.run(current: stranger).status == 0)
     }
 
+    @Test func futureSinceIsNamed() throws {
+        let f = try Fixture()
+        let result = f.run(since: now.addingTimeInterval(86_400))
+        #expect(result.status == 1)
+        #expect(result.err == ["headroom: --since is in the future"])
+    }
+
     @Test func rangeIsWholeLocalDaysWithInclusiveUntil() throws {
         let cal = utc()
         let day = { (d: Int) in cal.date(from: DateComponents(year: 2026, month: 12, day: d)) ?? .distantPast }

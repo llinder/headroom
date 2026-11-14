@@ -11,8 +11,9 @@ public struct Appendix: Sendable {
     public var groups: [(ReportGroup, cpuHours: Double, peakMemoryGB: Double)]
     public var agentRunCount: Int
     public var agentCPUHours: Double
-    /// False when no drive writes were recorded, so the report omits the wear projection instead of claiming zero.
-    public var ssdMeasured: Bool
+    /// Days with recorded drive writes. The yearly projection needs `minProjectionDays` of them: one busy partial
+    /// day projected over a year would be wildly wrong.
+    public var ssdDays: Int
     public var ssdWriteGBPerDay: Double
     public var ssdWriteTBPerYear: Double
     public var events: [String: Int]
@@ -21,6 +22,8 @@ public struct Appendix: Sendable {
     public var recorderAvgCPUPercent: Double
     public var recorderMaxFootprintMB: Double
     public var notes: [String]
+
+    public static let minProjectionDays = 7
 }
 
 /// Everything the PDF shows, worked out from the database so the renderer only lays it out. Only workload
@@ -51,7 +54,6 @@ public struct ReportModel: Sendable {
 
     private static let gib = 1_073_741_824.0
     private static let mib = 1_048_576.0
-    private static let sampleInterval = 10.0
     private static let rawRetention = 30.0 * 86_400
     private static let unknown = "—"
 
@@ -129,9 +131,7 @@ public struct ReportModel: Sendable {
                 } : [],
             limits: (memoryBytes: Double(machine?.ramBytes ?? 0), cores: cores, diskBytes: capacity),
             tags: try queries.tags(machineId: machineId, from: from, to: to),
-            capacityBars: this.histogram.filter { $0.key >= 1 && $0.value.seconds > 0 }.sorted { $0.key < $1.key }.map {
-                ($0.key, max($0.value.memoryLimited, $0.value.cpuSaturated) / $0.value.seconds)
-            },
+            capacityBars: capacityBars(this, config),
             capacityThreshold: config.capacityMaxLimitedShare,
             comparisonHeader: hasComparison
                 ? ComparisonRow(
@@ -161,6 +161,20 @@ public struct ReportModel: Sendable {
         return f.string(from: date)
     }
 
+    /// "1 hour", "2 hours", "15 minutes".
+    private static func quantity(_ value: Double, _ noun: String) -> String {
+        "\(Wording.trimmed(value)) \(noun)\(value == 1 ? "" : "s")"
+    }
+
+    /// Only levels the capacity walk would judge are drawn, and none at all when there isn't enough agent data:
+    /// a bar from a few minutes of samples would contradict "not enough data".
+    private static func capacityBars(_ f: Figures, _ config: HeadroomConfig) -> [(Int, Double)] {
+        if case .insufficientData = f.agentCapacity(config) { return [] }
+        return f.histogram.filter { $0.key >= 1 && $0.value.seconds >= Double(config.capacityMinSecondsPerLevel) }
+            .sorted { $0.key < $1.key }
+            .map { ($0.key, max($0.value.memoryLimited, $0.value.cpuSaturated) / $0.value.seconds) }
+    }
+
     private static func comparisonRows(
         _ this: Figures, _ baseline: Baseline?, _ previous: Figures?, _ config: HeadroomConfig
     ) -> [ComparisonRow] {
@@ -178,7 +192,7 @@ public struct ReportModel: Sendable {
             row("Peak memory demand", gb(baseline?.peakMemoryUsedGB, places: 1)) { f in
                 gb(SpecRecommender.typicalHeavyDay(f.memory.map(\.max)).map { $0 / gib }, places: 1)
             },
-            row("Typical CPU busy (p95)", baseline?.cpuP95.map(Wording.percent) ?? unknown) { f in
+            row("Busiest-hour CPU, median day", baseline?.cpuP95.map(Wording.percent) ?? unknown) { f in
                 f.cpu.isEmpty ? unknown : Wording.percent(Verdicts.median(f.cpu.map(\.p95)))
             },
             row("Disk used", baseline?.diskUsedGB.map { "\(Wording.decimal($0, places: 0)) GB" } ?? unknown) { f in
@@ -208,16 +222,13 @@ public struct ReportModel: Sendable {
             folded[g].map { (g, cpuHours: $0.cpu / 3600, peakMemoryGB: $0.peak / gib) }
         }
 
-        // The rollup keeps bytes written per 10 s tick; a day's total is its average tick times its recorded ticks.
-        let recorded = Dictionary(figures.coverage.map { ($0.day, $0.recorded) }, uniquingKeysWith: +)
-        let written = try queries.dailyMetric(machineId: machineId, metric: .ssdWrite, from: from, to: to, calendar: figures.calendar)
-            .compactMap { s in recorded[s.day].flatMap { $0 > 0 ? s.avg * $0 / sampleInterval : nil } }
+        let written = Array(
+            try queries.dailySSDWriteBytes(machineId: machineId, from: from, to: to, calendar: figures.calendar).values)
         let gbPerDay = written.isEmpty ? 0 : written.reduce(0, +) / Double(written.count) / 1e9
 
         let agents = try queries.agentRunTotals(machineId: machineId, from: from, to: to)
         let usage = try queries.selfUsage(machineId: machineId, from: from, to: to)
         let limits = config.limits
-        let workdayHours = Wording.trimmed(Double(config.workdayMinAwakeSeconds) / 3600)
 
         var notes = [
             "Agent capacity is measured while that many agents were active; it is a correlation, not proof that agents caused all of the load.",
@@ -230,19 +241,19 @@ public struct ReportModel: Sendable {
 
         return Appendix(
             groups: groups, agentRunCount: agents.runs, agentCPUHours: agents.cpuSeconds / 3600,
-            ssdMeasured: !written.isEmpty, ssdWriteGBPerDay: gbPerDay, ssdWriteTBPerYear: gbPerDay * 365 / 1000,
+            ssdDays: written.count, ssdWriteGBPerDay: gbPerDay, ssdWriteTBPerYear: gbPerDay * 365 / 1000,
             events: try queries.eventCounts(machineId: machineId, from: from, to: to),
             thresholds: [
                 "Memory ran out: memory pressure was at warning or critical, or memory was being swapped out to disk.",
-                "A workday counts as running out of memory after \(Wording.trimmed(Double(limits.memoryLimitedDayMinSeconds) / 60)) minutes of that.",
+                "A workday counts as running out of memory after \(quantity(Double(limits.memoryLimitedDayMinSeconds) / 60, "minute")) of that.",
                 "Heavy swapping: swap above \(Wording.percent(limits.heavySwapFractionOfRAM)) of memory while swapping back in.",
                 "Processor fully busy: total CPU at least \(Wording.percent(limits.cpuSaturatedFraction)), or load at least \(Wording.trimmed(limits.loadPerCoreMultiplier))× the core count.",
                 "Thermal-limited: the system reported a serious or critical thermal state.",
-                "Agent capacity: each level needs at least \(Wording.trimmed(Double(config.capacityMinSecondsPerLevel) / 3600)) hour of samples and must be limited under \(Wording.percent(config.capacityMaxLimitedShare)) of the time.",
+                "Agent capacity: each level needs at least \(quantity(Double(config.capacityMinSecondsPerLevel) / 3600, "hour")) of samples and must be limited under \(Wording.percent(config.capacityMaxLimitedShare)) of the time.",
                 "Memory is sized from the 95th percentile of daily peaks plus 25%; storage from used space plus a year of growth plus 20%.",
             ],
             workdayDefinition:
-                "A workday is any day with at least \(workdayHours) hours of awake time on the machine, judged from the machine's state, never from whether anyone was at the keyboard.",
+                "A workday is any day with at least \(quantity(Double(config.workdayMinAwakeSeconds) / 3600, "hour")) of awake time on the machine, judged from the machine's state, never from whether anyone was at the keyboard.",
             recorderAvgCPUPercent: usage.avgCPU * 100, recorderMaxFootprintMB: Double(usage.maxFootprint) / mib,
             notes: notes)
     }
@@ -275,9 +286,15 @@ private struct Figures {
         free = try queries.dailyMetric(machineId: machineId, metric: .diskFree, from: from, to: to, calendar: calendar)
         let starts = Dictionary(span.map { ($0.name, $0.start) }, uniquingKeysWith: { a, _ in a })
         dailyFree = free.compactMap { s in
-            starts[s.day].map { (Date(timeIntervalSince1970: $0), UInt64(max(s.avg, 0).rounded())) }
+            starts[s.day].map { (Date(timeIntervalSince1970: $0), Self.bytes(s.avg)) }
         }
         histogram = try queries.agentHistogram(machineId: machineId, from: from, to: to)
+    }
+
+    /// A corrupt or non-finite average reads as nothing free rather than trapping the conversion.
+    private static func bytes(_ value: Double) -> UInt64 {
+        guard value.isFinite, value > 0 else { return 0 }
+        return value >= 1.8e19 ? .max : UInt64(value.rounded())
     }
 
     var cores: Int { (machine?.perfCores ?? 0) + (machine?.effCores ?? 0) }
