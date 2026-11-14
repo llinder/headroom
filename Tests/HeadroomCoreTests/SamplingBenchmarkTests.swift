@@ -24,7 +24,7 @@ struct SamplingBenchmarkTests {
                 let i = batch * passesPerBatch + pass
                 let tick = pipeline.sample(
                     now: Double(i * 10), interval: 10, refreshSpace: i % 6 == 0, thermal: ThermalLevel.current())
-                if tick != nil { recorded += 1 }
+                if tick.tick != nil { recorded += 1 }
             }
             batchMeans.append((clock.now - start) / passesPerBatch)
         }
@@ -44,8 +44,8 @@ struct SamplingBenchmarkTests {
 struct SamplingPipelineTests {
     @Test func firstSampleHasNoBaselineThenTicksFlow() throws {
         var pipeline = SamplingPipeline(classifier: Classifier(rules: .defaults, currentUID: getuid()), config: HeadroomConfig())
-        #expect(pipeline.sample(now: 0, interval: 10, refreshSpace: true, thermal: .nominal) == nil)
-        let second = pipeline.sample(now: 10, interval: 10, refreshSpace: false, thermal: .fair)
+        #expect(pipeline.sample(now: 0, interval: 10, refreshSpace: true, thermal: .nominal).tick == nil)
+        let second = pipeline.sample(now: 10, interval: 10, refreshSpace: false, thermal: .fair).tick
         let tick = try #require(second)
         #expect(tick.ts == 10)
         #expect(tick.thermal == .fair)
@@ -60,6 +60,33 @@ struct SamplingPipelineTests {
     @Test func discardSetsTheBaseline() {
         var pipeline = SamplingPipeline(classifier: Classifier(rules: .defaults, currentUID: getuid()), config: HeadroomConfig())
         pipeline.discard()
-        #expect(pipeline.sample(now: 10, interval: 10, refreshSpace: true, thermal: .nominal) != nil)
+        #expect(pipeline.sample(now: 10, interval: 10, refreshSpace: true, thermal: .nominal).tick != nil)
+    }
+
+    /// The first sample has no CPU baseline, so its tick is nil; the agent update must still come back, or a
+    /// run that ended on such a tick would never be closed.
+    @Test func unsampledTickStillReportsAgents() throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "headroom-agent-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let agent = dir.appending(path: "claude")
+        try FileManager.default.copyItem(atPath: "/bin/sleep", toPath: agent.path)
+
+        var pid: pid_t = 0
+        let argv: [UnsafeMutablePointer<CChar>?] = [strdup("claude"), strdup("30"), nil]
+        defer { argv.forEach { free($0) } }
+        #expect(posix_spawn(&pid, agent.path, nil, nil, argv, environ) == 0)
+        defer {
+            kill(pid, SIGKILL)
+            var status: Int32 = 0
+            waitpid(pid, &status, 0)
+        }
+
+        var pipeline = SamplingPipeline(classifier: Classifier(rules: .defaults, currentUID: getuid()), config: HeadroomConfig())
+        let first = pipeline.sample(now: 0, interval: 10, refreshSpace: true, thermal: .nominal)
+        #expect(first.tick == nil)
+        // The run's root is the topmost agent above the child, which is an outer agent when tests run under one.
+        #expect(!first.agents.started.isEmpty)
+        #expect(first.agents.started.count == first.agents.live.count)
     }
 }

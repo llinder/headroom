@@ -135,6 +135,7 @@ private struct RollupInput {
 private enum Pending {
     case event(ts: Int64, kind: String, payload: String)
     case session(ts: Int64, tool: String, sessionId: String, model: String?, root: ProcessKey)
+    case runEnded(ts: Int64, root: ProcessKey)
 }
 
 private struct CommandPayload: Encodable {
@@ -296,6 +297,11 @@ public final class SampleStore {
                     root: ProcessKey(pid: rootPid, start: rootStart))
             }
         })
+    }
+
+    /// Ends runs reported on a tick that couldn't be sampled; only the end is kept, as there's no usage to record.
+    public func recordRunsEnded(_ roots: [ProcessKey], ts: Double) {
+        enqueue(roots.map { .runEnded(ts: Self.seconds(ts), root: $0) })
     }
 
     public func recordEvent(kind: String, ts: Double, payload: [String: String]) {
@@ -505,13 +511,15 @@ public final class SampleStore {
                 s.bind(3, Self.rootStart(run.root))
             }
         }
-        for key in t.agents.ended {
-            try step(endRun) { s in
-                s.bind(1, ts)
-                s.bind(2, machineId)
-                s.bind(3, Int64(key.pid))
-                s.bind(4, Self.rootStart(key))
-            }
+        for key in t.agents.ended { try closeRun(key, ts: ts) }
+    }
+
+    private func closeRun(_ key: ProcessKey, ts: Int64) throws {
+        try step(endRun) { s in
+            s.bind(1, ts)
+            s.bind(2, machineId)
+            s.bind(3, Int64(key.pid))
+            s.bind(4, Self.rootStart(key))
         }
     }
 
@@ -524,6 +532,8 @@ public final class SampleStore {
                 s.bind(3, kind)
                 s.bind(4, payload)
             }
+        case let .runEnded(ts, root):
+            try closeRun(root, ts: ts)
         case let .session(ts, tool, sessionId, model, root):
             try ensureRun(root: root, tool: tool, started: ts)
             guard let runId = try runId(root) else { return }

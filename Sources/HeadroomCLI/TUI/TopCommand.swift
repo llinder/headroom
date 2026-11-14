@@ -45,8 +45,8 @@ final class TopSession {
     func advance(now: Date) {
         let ts = now.timeIntervalSince1970
         if let tick = pipeline.sample(
-            now: ts, interval: 1, refreshSpace: ticks % Self.spaceRefreshEvery == 0, thermal: .current())
-        {
+            now: ts, interval: 1, refreshSpace: ticks % Self.spaceRefreshEvery == 0, thermal: .current()
+        ).tick {
             latest = tick
             history.append(tick.cpu.user + tick.cpu.system)
             if history.count > Self.historyLength { history.removeFirst(history.count - Self.historyLength) }

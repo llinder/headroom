@@ -34,9 +34,12 @@ public struct SamplingPipeline {
         agents.resetActivity()
     }
 
-    /// Nil when CPU, memory or disk can't be read, which for CPU includes the first call. Every sampler and the
-    /// agent tracker still advance on such a tick, so the next tick's deltas stay continuous.
-    public mutating func sample(now: Double, interval: Double, refreshSpace: Bool, thermal: ThermalLevel) -> Tick? {
+    /// The tick is nil when CPU, memory or disk can't be read, which for CPU includes the first call. Every sampler
+    /// and the agent tracker still advance on such a tick, so the next tick's deltas stay continuous, and the agent
+    /// update is returned either way: the tracker has dropped the runs it reports ended.
+    public mutating func sample(
+        now: Double, interval: Double, refreshSpace: Bool, thermal: ThermalLevel
+    ) -> (tick: Tick?, agents: AgentUpdate) {
         let cpuReading = cpu.sample(interval: interval)
         let memoryReading = memory.sample()
         let diskReading = disk.sample(refreshSpace: refreshSpace)
@@ -46,15 +49,16 @@ public struct SamplingPipeline {
         // .agents process on any path, which is what the tracker roots on, is the same as with own groups.
         let agentUpdate = agents.update(
             processes: procs, groups: groups, ownGroup: { groups[$0.key] == .agents ? .agents : nil }, now: now)
-        guard let cpuReading, let memoryReading, let diskReading else { return nil }
+        guard let cpuReading, let memoryReading, let diskReading else { return (nil, agentUpdate) }
 
         let top = TickAggregation.top(processes: procs, groups: groups)
-        return Tick(
+        let tick = Tick(
             ts: now, cpu: cpuReading, memory: memoryReading, disk: diskReading, thermal: thermal,
             flags: LimitEvaluator.evaluate(
                 cpu: cpuReading, memory: memoryReading, thermal: thermal, logicalCores: logicalCores, config: limits),
             groups: TickAggregation.groupTotals(processes: procs, groups: groups, busySeconds: cpuReading.busySeconds),
             topByCPU: top.byCPU, topByMemory: top.byMemory, agents: agentUpdate, selfCPU: 0, selfFootprint: 0)
+        return (tick, agentUpdate)
     }
 
     private mutating func classify(_ procs: [ProcessUsage]) -> [ProcessKey: WorkloadGroup] {

@@ -319,6 +319,20 @@ private func run(_ pid: Int32, cpu: Double, footprint: UInt64, write: UInt64 = 0
         #expect(ended == [["1", "1320"], ["2", "5000"], ["3", "1500"], ["4", "open"]])
     }
 
+    // A tick that couldn't be sampled still reports which runs ended; the store closes them without usage.
+    @Test func runEndedOnAnUnsampledTickIsClosed() throws {
+        let f = try Fixture()
+        let a = run(100, cpu: 2, footprint: 500)
+        f.store.append(tick(base, agents: AgentUpdate(started: [a], ended: [], live: [a], activeCount: 1, idleCount: 0)))
+        try f.store.flush()
+        let usage = try f.int("SELECT COUNT(*) FROM run_usage")
+
+        f.store.recordRunsEnded([a.root], ts: Double(base + 70))
+        try f.store.flush()
+        #expect(try f.int("SELECT COALESCE(ended, -1) FROM agent_runs") == base + 70)
+        #expect(try f.int("SELECT COUNT(*) FROM run_usage") == usage)
+    }
+
     // A recorder-only restart closes runs that are in fact still alive; the next live tick must reopen them,
     // or the real end is blocked forever.
     @Test func liveRunReopensAfterOrphanClose() throws {

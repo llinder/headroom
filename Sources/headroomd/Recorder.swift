@@ -155,8 +155,11 @@ final class Recorder {
             pipeline.discard()
             lastSample = clock.now
         } else {
-            sampled = pipeline.sample(
+            let result = pipeline.sample(
                 now: now, interval: elapsed, refreshSpace: tickCount % Self.spaceRefreshEvery == 0, thermal: level)
+            sampled = result.tick
+            // The tracker has already forgotten these runs, so no later tick would report their end.
+            if sampled == nil { store.recordRunsEnded(result.agents.ended, ts: now) }
         }
         let usage = readSelfUsage()
         if var tick = sampled {
