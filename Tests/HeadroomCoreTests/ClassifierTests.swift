@@ -63,6 +63,23 @@ struct ClassifierTests {
         #expect(out.values.allSatisfy { $0 == .other })
     }
 
+    @Test func fallbackIsNotInherited() {
+        let parent = proc(1, 0, "launchd", uid: 0)
+        let child = proc(2, 1, "mystery")
+        for procs in [[parent, child], [child, parent]] {
+            let out = classifier.classify(procs)
+            #expect(out[parent.key] == .system)
+            #expect(out[child.key] == .other)
+        }
+    }
+
+    @Test func truncatedNameMatchesViaPath() {
+        let vm = proc(
+            1, 0, "com.apple.Virtualization.Virtua",
+            path: "/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine")
+        #expect(classifier.ownGroup(vm) == .containers)
+    }
+
     @Test func invalidRulesFileFallsBack() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("groups-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }

@@ -23,8 +23,10 @@ public struct Classifier: Sendable {
     }
 
     public func ownGroup(_ p: ProcessIdentity) -> WorkloadGroup? {
+        // proc_name truncates to 31 characters, so the executable's basename is the reliable name.
+        let name = p.path.isEmpty ? p.name : String(p.path.split(separator: "/", omittingEmptySubsequences: true).last ?? Substring(p.name))
         for m in matchers {
-            if m.names.contains(where: { Self.globMatches($0, p.name) })
+            if m.names.contains(where: { Self.globMatches($0, name) })
                 || m.pathPrefixes.contains(where: { p.path.hasPrefix($0) })
             {
                 return m.group
@@ -36,29 +38,41 @@ public struct Classifier: Sendable {
     public func classify(_ procs: [ProcessIdentity]) -> [ProcessKey: WorkloadGroup] {
         var byPid: [Int32: ProcessIdentity] = [:]
         for p in procs { byPid[p.key.pid] = p }
-        var resolved: [ProcessKey: WorkloadGroup] = [:]
-        resolved.reserveCapacity(procs.count)
+        // Only rule-derived groups are memoized. The uid fallback applies to a process's own uid and must
+        // never be inherited by descendants, or results would depend on input order.
+        var classified: [ProcessKey: WorkloadGroup] = [:]
+        var unclassified: Set<ProcessKey> = []
 
-        for p in procs where resolved[p.key] == nil {
+        for p in procs where classified[p.key] == nil && !unclassified.contains(p.key) {
             var chain: [ProcessIdentity] = []
             var visited: Set<Int32> = []
             var cursor: ProcessIdentity? = p
             var inherited: WorkloadGroup?
             while let node = cursor, visited.insert(node.key.pid).inserted {
-                if let known = resolved[node.key] ?? ownGroup(node) {
-                    resolved[node.key] = known
+                if unclassified.contains(node.key) { break }
+                if let known = classified[node.key] ?? ownGroup(node) {
                     inherited = known
+                    classified[node.key] = known
                     break
                 }
                 chain.append(node)
                 cursor = byPid[node.ppid]
             }
-            // With no classified ancestor, each process falls back on its own uid, not the chain's.
             for node in chain {
-                resolved[node.key] = inherited ?? (node.uid != currentUID ? .system : .other)
+                if let inherited {
+                    classified[node.key] = inherited
+                } else {
+                    unclassified.insert(node.key)
+                }
             }
         }
-        return resolved
+
+        var result: [ProcessKey: WorkloadGroup] = [:]
+        result.reserveCapacity(procs.count)
+        for p in procs {
+            result[p.key] = classified[p.key] ?? (p.uid != currentUID ? .system : .other)
+        }
+        return result
     }
 
     /// `*` is honoured only as a full prefix, a full suffix, or both; anything else is literal.
