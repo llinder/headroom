@@ -160,7 +160,7 @@ file, which keeps them to microseconds with no SQLite open.
             ▼
    1-min accumulator ──► SQLite (WAL, headroomd is the only writer)
                           ├─ samples, group_samples, top_procs_1m (30 days)
-                          ├─ rollup_1m, rollup_1h (forever)
+                          ├─ rollup_1m (90 days), rollup_1h (forever)
                           ├─ events, coverage, machines (forever)
                           └─ agent_runs, agent_run_sessions, run_usage (forever)
 
@@ -436,8 +436,10 @@ release. Moving to a new Mac means copying the DB file. `headroomd` registers
 the new machine and recording continues in the same file. Schema changes go
 through numbered migrations that run at `headroomd` start.
 
-Retention: the 10 s tables keep 30 days. Rollups, sessions, events and coverage
-are kept forever, about 50–80 MB a year.
+Retention: the 10 s tables keep 30 days. Minute rollups and minute limit rows
+keep 90 days. Hourly rollups, sessions, events and coverage are kept forever.
+The rollup tables take about 2 MB per day recorded for the first 90 days, then
+about 0.1 MB per day.
 
 ### Workdays
 

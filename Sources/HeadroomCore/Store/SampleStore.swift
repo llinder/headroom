@@ -186,6 +186,8 @@ public final class SampleStore {
     private let pruneSamples: Statement
     private let pruneGroups: Statement
     private let pruneTop: Statement
+    private let pruneMinuteRollups: Statement
+    private let pruneMinuteLimits: Statement
 
     public init(db: Database, machineId: String, interval: Double = 10) throws {
         self.db = db
@@ -270,6 +272,8 @@ public final class SampleStore {
         pruneSamples = try db.prepare("DELETE FROM samples WHERE ts < ?")
         pruneGroups = try db.prepare("DELETE FROM group_samples WHERE ts < ?")
         pruneTop = try db.prepare("DELETE FROM top_procs_1m WHERE ts < ?")
+        pruneMinuteRollups = try db.prepare("DELETE FROM rollup WHERE resolution = 60 AND ts < ?")
+        pruneMinuteLimits = try db.prepare("DELETE FROM limit_seconds WHERE resolution = 60 AND ts < ?")
     }
 
     public var bufferedTicks: Int { buffer.count }
@@ -347,11 +351,18 @@ public final class SampleStore {
         _ = try stmt.step()
     }
 
-    public func applyRetention(now: Double, days: Int = 30) throws {
-        let cutoff = Int64(now.rounded(.down)) - Int64(days) * 86_400
+    /// Minute rollups are kept longer than raw samples so recent reports keep their partial hours, but not
+    /// forever: they are about 98% of the rollup rows, and every hour they cover has an hourly row by then.
+    public func applyRetention(now: Double, days: Int = 30, minuteDays: Int = 90) throws {
+        let start = Int64(now.rounded(.down))
+        let cutoff = start - Int64(days) * 86_400
+        let minuteCutoff = start - Int64(minuteDays) * 86_400
         try db.transaction {
             for s in [pruneSamples, pruneGroups, pruneTop] {
                 try step(s) { $0.bind(1, cutoff) }
+            }
+            for s in [pruneMinuteRollups, pruneMinuteLimits] {
+                try step(s) { $0.bind(1, minuteCutoff) }
             }
         }
     }

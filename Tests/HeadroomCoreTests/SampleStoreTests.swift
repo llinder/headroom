@@ -364,6 +364,24 @@ private func run(_ pid: Int32, cpu: Double, footprint: UInt64, write: UInt64 = 0
         #expect(try f.int("SELECT COUNT(*) FROM run_usage") == 1)
     }
 
+    @Test func retentionDropsMinuteRowsAfter90DaysAndKeepsHourly() throws {
+        let f = try Fixture()
+        let expired = base - 91 * 86_400
+        let kept = base - 89 * 86_400
+        for ts in [expired, kept] {
+            for resolution in [60, 3600] {
+                try f.db.exec("INSERT INTO rollup VALUES('m', \(resolution), \(ts), 'cpuBusy', 0.5, 0.9, 0.8)")
+                try f.db.exec("INSERT INTO limit_seconds VALUES('m', \(resolution), \(ts), 'cpuSaturated', 30)")
+            }
+        }
+        try f.store.applyRetention(now: Double(base))
+        for table in ["rollup", "limit_seconds"] {
+            #expect(try f.int("SELECT COUNT(*) FROM \(table) WHERE resolution=60 AND ts=\(expired)") == 0)
+            #expect(try f.int("SELECT COUNT(*) FROM \(table) WHERE resolution=60 AND ts=\(kept)") == 1)
+            #expect(try f.int("SELECT COUNT(*) FROM \(table) WHERE resolution=3600") == 2)
+        }
+    }
+
     @Test func flushFailureKeepsBounded() throws {
         let f = try Fixture()
         // A second connection holding the write lock makes BEGIN IMMEDIATE fail after the busy timeout.
