@@ -1,0 +1,11 @@
+{
+  "label": "Example reference workstation",
+  "cores": 42,
+  "memoryGB": 123.4,
+  "cpuP95": 0.42,
+  "peakMemoryUsedGB": 111.1,
+  "cacheGB": 22.2,
+  "diskUsedGB": 333.3,
+  "concurrentAgents": 7,
+  "source": "Made-up numbers for illustration. Replace them with measurements from your own reference machine."
+}
