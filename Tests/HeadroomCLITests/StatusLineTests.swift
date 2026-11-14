@@ -102,7 +102,8 @@ private let binary: URL? = {
 }()
 
 @Suite struct StatusLineSpeedTests {
-    @Test(.enabled(if: binary != nil)) func statuslineSpeed() throws {
+    // Wall-clock budgets are flaky on a loaded machine, so they only run under `make bench`.
+    @Test(.enabled(if: binary != nil), .enabled(if: ProcessInfo.processInfo.environment["HEADROOM_BENCH"] == "1", "wall-clock budget; run via make bench")) func statuslineSpeed() throws {
         let exe = try #require(binary)
         let dir = FileManager.default.temporaryDirectory.appending(path: "headroom-sl-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }

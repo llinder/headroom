@@ -105,7 +105,8 @@ private let sample = LiveSnapshot(
 }
 
 @Suite(.serialized) struct LiveStateSpeedTests {
-    @Test func readerSpeed() throws {
+    // Wall-clock budgets are flaky on a loaded machine, so they only run under `make bench`.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["HEADROOM_BENCH"] == "1", "wall-clock budget; run via make bench")) func readerSpeed() throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
         var writer = try LiveStateWriter(url: url)

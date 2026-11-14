@@ -4,7 +4,8 @@ import Testing
 @testable import HeadroomCore
 
 struct SamplingBenchmarkTests {
-    @Test func samplingPassBudget() {
+    // Wall-clock budgets are flaky on a loaded machine, so they only run under `make bench`.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["HEADROOM_BENCH"] == "1", "wall-clock budget; run via make bench")) func samplingPassBudget() {
         var pipeline = SamplingPipeline(classifier: Classifier(rules: .defaults, currentUID: getuid()), config: HeadroomConfig())
         pipeline.discard()
         var counter = ProcessSampler()

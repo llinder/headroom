@@ -265,7 +265,8 @@ private let releaseBinary: URL? = {
         #expect(spooled(spool).count == 2)
     }
 
-    @Test(.enabled(if: releaseBinary != nil, "needs `swift build -c release`"))
+    // Wall-clock budgets are flaky on a loaded machine, so they only run under `make bench`.
+    @Test(.enabled(if: releaseBinary != nil, "needs `swift build -c release`"), .enabled(if: ProcessInfo.processInfo.environment["HEADROOM_BENCH"] == "1", "wall-clock budget; run via make bench"))
     func releaseBinaryHookIsFast() throws {
         let binary = try #require(releaseBinary)
         let dir = try scratchDirectory()
