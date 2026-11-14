@@ -138,3 +138,34 @@ public struct DiagnosticScanner {
         return nil
     }
 }
+
+/// Whether the recorder considers the machine asleep. Timers don't fire during real sleep and a dark wake still
+/// delivers a wake notification, so several timer ticks in a row while "asleep" mean the wake message was lost;
+/// without this the recorder would discard every tick forever while looking healthy.
+public struct SleepState: Sendable {
+    static let missedWakeTicks = 6
+
+    public private(set) var isAsleep = false
+    private var asleepTicks = 0
+
+    public init() {}
+
+    public mutating func onWillSleep() {
+        isAsleep = true
+        asleepTicks = 0
+    }
+
+    public mutating func onDidWake() {
+        isAsleep = false
+        asleepTicks = 0
+    }
+
+    /// True when this tick ends a sleep whose wake notification never came.
+    public mutating func onTick() -> Bool {
+        guard isAsleep else { return false }
+        asleepTicks += 1
+        guard asleepTicks >= Self.missedWakeTicks else { return false }
+        onDidWake()
+        return true
+    }
+}

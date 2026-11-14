@@ -32,7 +32,7 @@ final class Recorder {
 
     private var tickCount = 0
     private var lastSample: SuspendingClock.Instant
-    private var asleep = false
+    private var sleep = SleepState()
     private var thermal = ThermalLevel.current()
     private var lastSelfCPU: Double?
     private var nextScanSince = Date()
@@ -134,11 +134,18 @@ final class Recorder {
             store.recordEvent(kind: "thermal", ts: now, payload: ["level": String(level.rawValue)])
         }
 
+        let resumed = sleep.onTick()
+        if resumed {
+            log.warning("wake notification missed; resuming")
+            store.recordEvent(kind: "wake", ts: now, payload: [:])
+        }
+
         // A tick between the real sleep and the wake notification only moves the baselines, so neither the
         // samples nor agent activity count the sleep. A nil tick still advanced every counter.
         var sampled: Tick?
-        if asleep {
+        if sleep.isAsleep || resumed {
             pipeline.discard()
+            lastSample = clock.now
         } else {
             sampled = pipeline.sample(
                 now: now, interval: elapsed, refreshSpace: tickCount % Self.spaceRefreshEvery == 0, thermal: level)
@@ -158,11 +165,11 @@ final class Recorder {
     private func handlePower(_ event: PowerEvent) {
         switch event {
         case .willSleep(let ts):
-            asleep = true
+            sleep.onWillSleep()
             store.recordEvent(kind: "sleep", ts: ts, payload: [:])
             flushCycle(now: ts)
         case .didWake(let ts):
-            asleep = false
+            sleep.onDidWake()
             store.recordEvent(kind: "wake", ts: ts, payload: [:])
             pipeline.discard()
             lastSample = clock.now
