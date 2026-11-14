@@ -188,7 +188,20 @@ func run(_ args: [String], out: (String) -> Void, err: (String) -> Void) -> Int3
     case .help:
         out(usageText)
         return 0
-    case .top, .report, .install, .uninstall, .statusline, .agentHook, .hookZsh, .recordCommand:
+    case let .install(agents):
+        guard let executable = Bundle.main.executableURL else {
+            err("headroom: cannot locate the running executable")
+            return 1
+        }
+        return Install.run(
+            agents: agents, home: FileManager.default.homeDirectoryForCurrentUser,
+            sourceDir: executable.resolvingSymlinksInPath().deletingLastPathComponent(), uid: getuid(), now: Date(),
+            launchctl: Install.launchctl, out: out, err: err)
+    case .uninstall:
+        return Install.uninstall(
+            home: FileManager.default.homeDirectoryForCurrentUser, dataDirectory: Paths.standard().root, uid: getuid(),
+            now: Date(), launchctl: Install.launchctl, out: out, err: err)
+    case .top, .report, .statusline, .agentHook, .hookZsh, .recordCommand:
         err("headroom: this command is not available in this build")
         return 1
     }
