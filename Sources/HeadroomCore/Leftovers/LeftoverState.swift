@@ -54,12 +54,15 @@ public struct LeftoverState: Codable, Sendable, Equatable {
     public var keepWarning: String?
     /// Testcontainers session id to the last time its reaper was seen running.
     public var seenReapers: [String: Double]
-    /// Start time per item key, flagged or not, so a later pass doesn't spend its call budget inspecting it again.
+    /// Start time per container ID, flagged or not, so a later pass doesn't spend its call budget inspecting it again.
     public var starts: [String: Double]
+    /// Container ID to the time its inspect last failed, so one bad container can't take the budget every pass.
+    public var inspectFailedAt: [String: Double]
 
     public init(
         updated: Double = 0, engines: [EngineStatus] = [], items: [FlaggedItem] = [], kept: [KeptItem] = [],
-        keepWarning: String? = nil, seenReapers: [String: Double] = [:], starts: [String: Double] = [:]
+        keepWarning: String? = nil, seenReapers: [String: Double] = [:], starts: [String: Double] = [:],
+        inspectFailedAt: [String: Double] = [:]
     ) {
         self.updated = updated
         self.engines = engines
@@ -68,6 +71,7 @@ public struct LeftoverState: Codable, Sendable, Equatable {
         self.keepWarning = keepWarning
         self.seenReapers = seenReapers
         self.starts = starts
+        self.inspectFailedAt = inspectFailedAt
     }
 
     public var totalBytes: UInt64 {
@@ -83,9 +87,18 @@ public struct LeftoverState: Codable, Sendable, Equatable {
     }
 
     /// Readers such as the CLI may open the file at any time, so it is replaced by rename, never rewritten in place.
+    /// It names containers and projects, so it is readable by the user only (0600).
     public func save(to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        try encoder.encode(self).write(to: url, options: .atomic)
+        let data = try encoder.encode(self)
+        let temp = url.deletingLastPathComponent().appending(path: ".\(url.lastPathComponent).\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: temp.path, contents: data, attributes: [.posixPermissions: 0o600])
+        else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: temp.path]) }
+        guard rename(temp.path, url.path) == 0 else {
+            let code = errno
+            try? FileManager.default.removeItem(at: temp)
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
     }
 }

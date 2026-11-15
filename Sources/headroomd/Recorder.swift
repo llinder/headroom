@@ -79,8 +79,8 @@ final class Recorder {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let environment = ProcessInfo.processInfo.environment
         leftoverMonitor = LeftoverMonitor(
-            engines: { DockerEngines.discover(home: home, environment: environment) }, config: config.leftovers)
-        leftoverIdleThreshold = Double(config.leftovers.afterMinutes * 60)
+            machineId: machine.machineId, engines: { DockerEngines.discover(home: home, environment: environment) }, config: config.leftovers)
+        leftoverIdleThreshold = Double(config.leftovers.afterMinutes) * 60
         leftovers = LeftoverState.load(from: paths.leftovers)
         liveState = try LiveStateWriter(url: paths.liveState)
         readMeta = try db.prepare("SELECT value FROM meta WHERE key=?")

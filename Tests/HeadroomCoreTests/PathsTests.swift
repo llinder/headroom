@@ -19,3 +19,19 @@ import Testing
     #expect(Paths.standard(environment: ["HEADROOM_ROOT": ""]).root.lastPathComponent == "headroom")
     #expect(Paths.standard(environment: [:]).root.path.hasSuffix("Library/Application Support/headroom"))
 }
+
+@Test func ensureRootIsPrivate() throws {
+    let fm = FileManager.default
+    let parent = fm.temporaryDirectory.appending(path: "headroom-perm-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: parent) }
+    let mode = { (url: URL) in (try? fm.attributesOfItem(atPath: url.path)[.posixPermissions]) as? Int }
+
+    let fresh = Paths(root: parent.appending(path: "fresh"))
+    try fresh.ensureRoot()
+    #expect(mode(fresh.root) == 0o700)
+
+    let loose = parent.appending(path: "loose")
+    try fm.createDirectory(at: loose, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+    try Paths(root: loose).ensureRoot()
+    #expect(mode(loose) == 0o700)
+}

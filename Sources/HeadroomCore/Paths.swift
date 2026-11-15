@@ -27,7 +27,12 @@ public struct Paths: Sendable {
     public var keeps: URL { root.appending(path: "keeps.json") }
     public var pretool: URL { root.appending(path: "pretool", directoryHint: .isDirectory) }
 
+    /// The root holds container and project names (`leftovers.json`, `keeps.json`), so it is the user's alone; an
+    /// older install's looser directory is tightened.
     public func ensureRoot() throws {
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let fm = FileManager.default
+        try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let mode = (try fm.attributesOfItem(atPath: root.path)[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        if mode & 0o077 != 0 { try fm.setAttributes([.posixPermissions: mode & 0o700], ofItemAtPath: root.path) }
     }
 }

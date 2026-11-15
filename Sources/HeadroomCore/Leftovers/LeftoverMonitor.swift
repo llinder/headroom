@@ -11,12 +11,17 @@ public struct LeftoverMonitor: Sendable {
     static let maxTransientFailures = 3
     static let reaperMemory = 86_400.0
     static let skippedKeepsNote = " (keeps.json has unreadable entries)"
+    static let inspectRetry = 1800.0
+    /// Bounds the ownership read; older items lose their intent markers and are judged as unowned.
+    static let factsHorizon = 31 * 86_400.0
 
     private let engines: @Sendable () -> [DockerEngine]
     private let client: @Sendable (String) -> DockerClient
     private let config: LeftoversConfig
+    private let machineId: String
 
     public init(
+        machineId: String,
         engines: @escaping @Sendable () -> [DockerEngine],
         client: @escaping @Sendable (String) -> DockerClient = { DockerClient(socketPath: $0) },
         config: LeftoversConfig
@@ -24,10 +29,11 @@ public struct LeftoverMonitor: Sendable {
         self.engines = engines
         self.client = client
         self.config = config
+        self.machineId = machineId
     }
 
-    /// `facts` is called at most once, with a `since` that covers the intent window before the oldest start time,
-    /// and returns nil when the database can't be read. `deadline` is wall-clock epoch seconds, checked between calls.
+    /// `facts` is called at most once, with a `since` that covers the intent window before the oldest start time
+    /// (but no earlier than `factsHorizon` before `now`), and returns nil when the database can't be read. `deadline` is wall-clock epoch seconds, checked between calls.
     public func pass(
         previous: LeftoverState, facts: (Double) -> OwnershipFacts?, keeps: KeepList, keepWarning: String? = nil,
         now: Double, deadline: Double
@@ -80,26 +86,43 @@ public struct LeftoverMonitor: Sendable {
             }
         }
 
+        // Keyed by container, not item: `compose down && up` or a Kind recreate keeps the item key with new containers.
         var starts = previous.starts
-        for flagged in previous.items where starts[flagged.item.key] == nil { starts[flagged.item.key] = flagged.startedAt }
-        for item in candidates where starts[item.key] == nil {
-            guard mayCall() else { break }
-            guard let id = item.containerIDs.first, let socket = sockets[item.engine] else { continue }
-            budget -= 1
-            guard let data = try? client(socket).get("/containers/\(id)/json"),
-                  let detail = ContainerDetail.parse(inspectJSON: data)
-            else { continue }
-            starts[item.key] = detail.startedAt
+        var inspectFailedAt = previous.inspectFailedAt.filter { now - $0.value < Self.inspectRetry }
+        inspect: for item in candidates {
+            guard let socket = sockets[item.engine] else { continue }
+            for id in item.containerIDs where starts[id] == nil && inspectFailedAt[id] == nil {
+                guard mayCall() else { break inspect }
+                budget -= 1
+                if let data = try? client(socket).get("/containers/\(id)/json"),
+                   let detail = ContainerDetail.parse(inspectJSON: data) {
+                    starts[id] = detail.startedAt
+                } else {
+                    inspectFailedAt[id] = now
+                }
+            }
+        }
+
+        // The newest member start, on purpose: a stack that was recreated or gained a container counts from that
+        // change, so an owner who just touched it is found. Erring young only delays a flag; erring old raises a
+        // false one. An item with any member not yet inspected waits.
+        func itemStart(_ item: LeftoverItem) -> Double? {
+            var newest: Double?
+            for id in item.containerIDs {
+                guard let start = starts[id] else { return nil }
+                newest = max(newest ?? start, start)
+            }
+            return newest
         }
 
         var seenReapers = previous.seenReapers.filter { now - $0.value <= Self.reaperMemory }
         for session in reapers { seenReapers[session] = now }
         let goneReapers = Set(seenReapers.keys).subtracting(reapers)
 
-        let known = candidates.compactMap { item in starts[item.key].map { (item: item, startedAt: $0) } }
+        let known = candidates.compactMap { item in itemStart(item).map { (item: item, startedAt: $0) } }
         var flagged: [FlaggedItem] = []
         if let oldest = known.map(\.startedAt).min() {
-            if let facts = facts(oldest - LeftoverPolicy.intentWindow) {
+            if let facts = facts(max(oldest - LeftoverPolicy.intentWindow, now - Self.factsHorizon)) {
                 for (item, startedAt) in known {
                     let decision = LeftoverPolicy.decide(
                         item, startedAt: startedAt, facts: facts, keeps: keeps, liveReapers: reapers,
@@ -118,30 +141,35 @@ public struct LeftoverMonitor: Sendable {
             }
         }
 
+        // Memory is set only once every member is read, because it is never read again after that: a partial sum
+        // would understate the item for good. An item too big for the remaining budget waits for a later pass.
         stats: for i in flagged.indices where flagged[i].memoryBytes == nil {
-            guard let socket = sockets[flagged[i].item.engine] else { continue }
+            let ids = flagged[i].item.containerIDs
+            guard let socket = sockets[flagged[i].item.engine], !ids.isEmpty, ids.count <= budget else { continue }
             var total: UInt64 = 0
-            var read = false
-            for id in flagged[i].item.containerIDs {
-                // An item read only in part would understate its memory, and it is never read again once set.
-                guard mayCall() else { break stats }
+            var complete = true
+            for id in ids {
+                guard Date().timeIntervalSince1970 < deadline else { break stats }
                 budget -= 1
                 guard let data = try? client(socket).get("/containers/\(id)/stats?stream=false&one-shot=true"),
                       let bytes = ContainerDetail.memoryEstimate(statsJSON: data)
-                else { continue }
+                else {
+                    complete = false
+                    break
+                }
                 total = Self.saturatingAdd(total, bytes)
-                read = true
             }
-            if read { flagged[i].memoryBytes = total }
+            if complete { flagged[i].memoryBytes = total }
         }
 
         let items = previous.items.filter { carriedEngines.contains($0.item.engine) } + flagged
-        let presentKeys = Set(listed.map(\.key))
-        starts = starts.filter { presentKeys.contains($0.key) || carried($0.key) }
+        let presentIDs = Set(listed.flatMap(\.containerIDs) + items.flatMap(\.item.containerIDs))
+        starts = starts.filter { presentIDs.contains($0.key) }
+        inspectFailedAt = inspectFailedAt.filter { presentIDs.contains($0.key) }
 
         let state = LeftoverState(
             updated: now, engines: statuses, items: items, kept: kept, keepWarning: keepWarning,
-            seenReapers: seenReapers, starts: starts)
+            seenReapers: seenReapers, starts: starts, inspectFailedAt: inspectFailedAt)
         return (state, events(previous: previous.items, current: items))
     }
 
@@ -172,19 +200,20 @@ public struct LeftoverMonitor: Sendable {
         for f in cleared {
             let bytes = f.memoryBytes ?? 0
             total = total >= bytes ? total - bytes : 0
-            out.append((kind: "leftover_cleared", payload: Self.payload(f, bytes: bytes, total: total)))
+            out.append((kind: "leftover_cleared", payload: payload(f, bytes: bytes, total: total)))
         }
         for f in added {
             let bytes = f.memoryBytes ?? 0
             total = Self.saturatingAdd(total, bytes)
-            out.append((kind: "leftover", payload: Self.payload(f, bytes: bytes, total: total)))
+            out.append((kind: "leftover", payload: payload(f, bytes: bytes, total: total)))
         }
         return out
     }
 
-    /// Events go into SQLite, which never holds container names, so the key is reduced to a short hash.
-    private static func payload(_ f: FlaggedItem, bytes: UInt64, total: UInt64) -> [String: String] {
-        let digest = SHA256.hash(data: Data(f.item.key.utf8)).map { String(format: "%02x", $0) }.joined()
+    /// Events go into SQLite, which never holds container names, so the key is reduced to a short hash. The machine
+    /// id salts it, so a common name such as `compose/postgres` can't be matched across machines by its hash.
+    private func payload(_ f: FlaggedItem, bytes: UInt64, total: UInt64) -> [String: String] {
+        let digest = SHA256.hash(data: Data((machineId + "\n" + f.item.key).utf8)).map { String(format: "%02x", $0) }.joined()
         return ["kind": f.item.kind.rawValue, "ref": String(digest.prefix(12)), "bytes": String(bytes), "totalBytes": String(total)]
     }
 
