@@ -221,8 +221,10 @@ enum Install {
     static func mcpRegister(
         exe: String, runner: Runner, find: (String) -> String?, out: (String) -> Void, err: (String) -> Void
     ) {
-        for tool in ["claude", "codex"] {
-            guard let cli = find(tool) else { continue }
+        let found = ["claude", "codex"].compactMap { tool in find(tool).map { (tool: tool, cli: $0) } }
+        // `claude mcp list` health-checks every configured server and can take half a minute.
+        if !found.isEmpty { out("checking MCP registrations…") }
+        for (tool, cli) in found {
             let listing = runner([cli, "mcp", "list"])
             if listing.status == 0, mcpRegistered(listing.stdout) {
                 out("\(tool): headroom MCP server already registered")

@@ -498,6 +498,21 @@ private final class Home {
             h.runnerCalls == [["/fake/bin/codex", "mcp", "list"], ["/fake/bin/codex", "mcp", "add", "headroom", "--", abs, "mcp"]])
     }
 
+    /// `claude mcp list` health-checks every server and can take ~30 s, so the user is told before it starts.
+    @Test func mcpCheckAnnouncesItselfOnlyWhenACLIIsPresent() throws {
+        let h = try Home()
+        h.onPath = ["claude": ""]
+        let (_, out, _) = h.install(agents: true)
+        let notice = try #require(out.firstIndex(of: "checking MCP registrations…"))
+        let registered = try #require(out.firstIndex(of: "claude: registered the headroom MCP server"))
+        #expect(notice < registered)
+        #expect(out.filter { $0 == "checking MCP registrations…" }.count == 1)
+
+        h.onPath = [:]
+        let (_, quiet, _) = h.install(agents: true)
+        #expect(!quiet.contains("checking MCP registrations…"))
+    }
+
     @Test func mcpNameMustMatchExactly() throws {
         let h = try Home()
         h.onPath = ["claude": "headroom-dev: /x/headroom mcp - ✔ Connected\nnotes: /git/headroom/run - ✔ Connected\n"]
