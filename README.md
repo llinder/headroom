@@ -136,9 +136,9 @@ headroom leftovers [--json] [--kept]
 ```
 
 lists the leftovers with their memory, age, cleanup commands and a `keep:` line
-with the command that stops flagging them. `--json` prints the items as JSON,
+with the command that stops flagging them. `--json` prints the items as a JSON array,
 and `--kept` also lists the items that are not flagged because they are kept or
-ignored. `headroom status` shows the engines found and when they were last
+ignored. With both, the JSON is an object, `{"items": [...], "kept": [...]}`. `headroom status` shows the engines found and when they were last
 checked, `headroom top` shows a leftovers pane with `l`, and the
 [status line](#status-line) shows a count.
 

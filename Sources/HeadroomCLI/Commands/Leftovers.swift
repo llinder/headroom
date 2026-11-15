@@ -4,12 +4,20 @@ import HeadroomCore
 enum Leftovers {
     private static let unreadableKeeps = "keeps.json has unreadable entries; fix or remove them before changing the keep list"
 
+    private struct WithKept: Encodable {
+        let items: [FlaggedItem]
+        let kept: [KeptItem]
+    }
+
+    /// `--json` alone stays a bare array of items, so scripts written against it keep working.
     static func run(paths: Paths, now: Date, json: Bool, kept: Bool, out: (String) -> Void) -> Int32 {
         let state = LeftoverState.load(from: paths.leftovers)
         if json {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            out((try? String(data: encoder.encode(state.items), encoding: .utf8)) ?? "[]")
+            let data = kept
+                ? try? encoder.encode(WithKept(items: state.items, kept: state.kept)) : try? encoder.encode(state.items)
+            out(data.map { String(decoding: $0, as: UTF8.self) } ?? (kept ? #"{"items":[],"kept":[]}"# : "[]"))
             return 0
         }
         if state.items.isEmpty { out("no abandoned containers") }

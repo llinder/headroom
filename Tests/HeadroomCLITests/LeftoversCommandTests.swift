@@ -62,6 +62,20 @@ private func flagged(memory: UInt64?, started: Double) -> FlaggedItem {
         #expect(try JSONDecoder().decode([FlaggedItem].self, from: Data(box.out[0].utf8)) == [item])
     }
 
+    @Test func leftoversJSONWithKept() throws {
+        struct Both: Decodable, Equatable {
+            let items: [FlaggedItem]
+            let kept: [KeptItem]
+        }
+        let box = try Sandbox()
+        let item = flagged(memory: 1_000_000_000, started: 100)
+        let kept = KeptItem(key: "docker/kind:ci", why: "keep list")
+        try LeftoverState(items: [item], kept: [kept]).save(to: box.paths.leftovers)
+        _ = Leftovers.run(paths: box.paths, now: now, json: true, kept: true) { box.out.append($0) }
+        #expect(box.out.count == 1)
+        #expect(try JSONDecoder().decode(Both.self, from: Data(box.out[0].utf8)) == Both(items: [item], kept: [kept]))
+    }
+
     @Test func keptListed() throws {
         let box = try Sandbox()
         try LeftoverState(kept: [KeptItem(key: "docker/kind:ci", why: "keep list")]).save(to: box.paths.leftovers)
