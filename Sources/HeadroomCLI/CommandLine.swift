@@ -25,6 +25,7 @@ public enum Command: Equatable {
     case keep(name: String, forSeconds: Double?)
     case unkeep(name: String)
     case keeps
+    case mcp
     case version
     case help
 }
@@ -46,6 +47,7 @@ let usageText = """
       agent-hook <tool>          hook entry point for agent tools
       agent-hook pretool <tool>  pre-command advice hook for agent tools
       hook zsh                   print the zsh preexec/precmd snippet
+      mcp                        read-only MCP server on stdio, for agents
       record-command <exe> <seconds>
       version
       help
@@ -66,6 +68,9 @@ public func parse(_ args: [String]) throws(UsageError) -> Command {
     case "uninstall":
         try expectNoArguments(rest, for: name)
         return .uninstall
+    case "mcp":
+        try expectNoArguments(rest, for: name)
+        return .mcp
     case "version", "--version":
         try expectNoArguments(rest, for: name)
         return .version
@@ -263,11 +268,12 @@ func run(_ args: [String], out: (String) -> Void, err: (String) -> Void) -> Int3
         return Install.run(
             agents: agents, home: FileManager.default.homeDirectoryForCurrentUser,
             sourceDir: executable.resolvingSymlinksInPath().deletingLastPathComponent(), uid: getuid(), now: Date(),
-            launchctl: Install.launchctl, out: out, err: err)
+            launchctl: Install.launchctl, runner: Install.runProcess, find: Install.which, out: out, err: err)
     case .uninstall:
         return Install.uninstall(
             home: FileManager.default.homeDirectoryForCurrentUser, dataDirectory: Paths.standard().root, uid: getuid(),
-            now: Date(), launchctl: Install.launchctl, out: out, err: err)
+            now: Date(), launchctl: Install.launchctl, runner: Install.runProcess, find: Install.which, out: out,
+            err: err)
     case let .statusline(format, color, quiet):
         out(StatusLine.render(template: format ?? StatusLineFormatter.defaultTemplate, color: color, quiet: quiet))
         return 0
@@ -275,6 +281,12 @@ func run(_ args: [String], out: (String) -> Void, err: (String) -> Void) -> Int3
         return AgentHook.run(tool: tool)
     case let .agentPretool(tool):
         return AgentHook.runPretool(tool: tool)
+    case .mcp:
+        // A client that exits mid-reply must end the server through a failed write, not SIGPIPE.
+        signal(SIGPIPE, SIG_IGN)
+        MCPServer(paths: .standard(), now: { Date().timeIntervalSince1970 })
+            .serve(input: .standardInput, output: .standardOutput)
+        return 0
     case .hookZsh:
         out(ShellHook.zshSnippet)
         return 0

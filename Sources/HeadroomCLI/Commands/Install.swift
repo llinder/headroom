@@ -168,10 +168,80 @@ enum Install {
         home.appending(path: "Library/LaunchAgents/\(LaunchAgent.label).plist")
     }
 
+    typealias Runner = ([String]) -> (status: Int32, stdout: String)
+
+    /// Runs a CLI with no stdin and returns its stdout. Its stderr is dropped: `mcp remove` of a server that isn't
+    /// registered complains there, and that is the expected case.
+    static func runProcess(_ arguments: [String]) -> (status: Int32, stdout: String) {
+        guard let executable = arguments.first else { return (127, "") }
+        let process = Process()
+        process.executableURL = URL(filePath: executable)
+        process.arguments = Array(arguments.dropFirst())
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return (127, "") }
+        // Draining before the wait keeps a chatty child from blocking on a full pipe.
+        let output = (try? pipe.fileHandleForReading.readToEnd()) ?? nil
+        process.waitUntilExit()
+        return (process.terminationStatus, output.map { String(decoding: $0, as: UTF8.self) } ?? "")
+    }
+
+    static func which(_ name: String) -> String? {
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for dir in path.split(separator: ":") where !dir.isEmpty {
+            let candidate = URL(filePath: String(dir)).appending(path: name).path
+            if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
+        }
+        return nil
+    }
+
+    private static let mcpName = "headroom"
+
+    private static func mcpAdd(tool: String, cli: String, exe: String) -> [String] {
+        tool == "claude"
+            ? [cli, "mcp", "add", "--scope", "user", mcpName, "--", exe, "mcp"]
+            : [cli, "mcp", "add", mcpName, "--", exe, "mcp"]
+    }
+
+    private static func mcpRemove(tool: String, cli: String) -> [String] {
+        tool == "claude" ? [cli, "mcp", "remove", "--scope", "user", mcpName] : [cli, "mcp", "remove", mcpName]
+    }
+
+    /// Both CLIs print one server per line with its name first: Claude Code as `name: command - status`, Codex as a
+    /// table row. Matching the whole first field keeps `headroom-dev`, or a path containing `headroom`, from counting.
+    static func mcpRegistered(_ listing: String) -> Bool {
+        listing.split(whereSeparator: \.isNewline).contains { line in
+            guard let first = line.split(whereSeparator: \.isWhitespace).first else { return false }
+            return first == mcpName || first == "\(mcpName):"
+        }
+    }
+
+    static func mcpRegister(
+        exe: String, runner: Runner, find: (String) -> String?, out: (String) -> Void, err: (String) -> Void
+    ) {
+        for tool in ["claude", "codex"] {
+            guard let cli = find(tool) else { continue }
+            let listing = runner([cli, "mcp", "list"])
+            if listing.status == 0, mcpRegistered(listing.stdout) {
+                out("\(tool): headroom MCP server already registered")
+                continue
+            }
+            let add = mcpAdd(tool: tool, cli: cli, exe: exe)
+            let status = runner(add).status
+            if status == 0 {
+                out("\(tool): registered the headroom MCP server")
+            } else {
+                err("\(tool) mcp add failed with status \(status); to register by hand: \(add.joined(separator: " "))")
+            }
+        }
+    }
+
     static func run(
         agents: Bool, home: URL, sourceDir: URL, uid: UInt32, now: Date, launchctl: ([String]) -> Int32,
-        sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
-        out: (String) -> Void, err: (String) -> Void
+        sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }, runner: Runner,
+        find: (String) -> String?, out: (String) -> Void, err: (String) -> Void
     ) -> Int32 {
         let fm = FileManager.default
         let bin = home.appending(path: ".local/bin")
@@ -216,6 +286,7 @@ enum Install {
             }
             if tool == "codex", written { out("codex: approve the new headroom hooks when Codex asks you to trust them") }
         }
+        mcpRegister(exe: exe, runner: runner, find: find, out: out, err: err)
         out(
             """
             status line: ccstatusline custom command: \(exe) statusline
@@ -225,8 +296,8 @@ enum Install {
     }
 
     static func uninstall(
-        home: URL, dataDirectory: URL, uid: UInt32, now: Date, launchctl: ([String]) -> Int32,
-        out: (String) -> Void, err: (String) -> Void
+        home: URL, dataDirectory: URL, uid: UInt32, now: Date, launchctl: ([String]) -> Int32, runner: Runner,
+        find: (String) -> String?, out: (String) -> Void, err: (String) -> Void
     ) -> Int32 {
         let fm = FileManager.default
         _ = launchctl(["bootout", "gui/\(uid)/\(LaunchAgent.label)"])
@@ -243,6 +314,11 @@ enum Install {
                 guard let data, hookEvents.contains(where: { HookConfig.contains(data, event: $0) }) else { return nil }
                 return try HookConfig.removed(data)
             }
+        }
+        // Failures are ignored: the usual one is that headroom was never registered with that CLI.
+        for tool in ["claude", "codex"] {
+            guard let cli = find(tool) else { continue }
+            _ = runner(mcpRemove(tool: tool, cli: cli))
         }
         out("uninstalled \(LaunchAgent.label)")
         out("data kept at \(dataDirectory.path)")

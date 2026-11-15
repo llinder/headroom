@@ -42,6 +42,37 @@ public struct AgentLevelStats: Sendable, Equatable {
     }
 }
 
+public struct MetricPoint: Sendable, Equatable {
+    public var ts: Double
+    public var avg: Double
+    public var max: Double
+    public var p95: Double
+}
+
+/// One `top_procs_1m` entry. `kind` is `cpu` (CPU seconds in the peak 10 s tick) or `memory` (bytes).
+public struct TopProcess: Sendable, Equatable {
+    public var kind: String
+    public var name: String
+    public var group: String
+    public var value: Double
+}
+
+public struct RunActivity: Sendable, Equatable {
+    public var tool: String
+    public var started: Double
+    public var ended: Double?
+    public var lastUsage: Double?
+    public var cpuSeconds: Double
+    public var peakFootprint: UInt64
+    public var activeSeconds: Double
+}
+
+public struct StoredEvent: Sendable, Equatable {
+    public var ts: Double
+    public var kind: String
+    public var payload: String
+}
+
 /// Read-only views over the recorder's database for the CLI, report and MCP server. A failed query throws,
 /// so a busy or corrupt database is never mistaken for an empty one.
 public struct Queries {
@@ -409,6 +440,170 @@ public struct Queries {
         return byDay[day.name] ?? [:]
     }
 
+    // MARK: - Point-in-time views for the MCP server
+
+    public static let minuteResolution = minute
+    public static let hourResolution = hour
+
+    /// Rollup rows of one resolution in [from, to), oldest first.
+    public func metricSeries(
+        machineId: String, metric: Metric, resolution: Int64, from: Double, to: Double, limit: Int
+    ) throws(DatabaseError) -> [MetricPoint] {
+        try rows(
+            """
+            SELECT ts, avg, max, p95 FROM rollup
+            WHERE machine_id=? AND resolution=? AND metric=? AND ts>=? AND ts<? ORDER BY ts LIMIT ?
+            """
+        ) { s in
+            s.bind(1, machineId)
+            s.bind(2, resolution)
+            s.bind(3, metric.rawValue)
+            s.bind(4, Int64(from.rounded(.down)))
+            s.bind(5, Int64(to.rounded(.up)))
+            s.bind(6, Int64(limit))
+        } read: { MetricPoint(ts: $0.double(0), avg: $0.double(1), max: $0.double(2), p95: $0.double(3)) }
+    }
+
+    /// The largest per-row maximum in [from, to), or nil when no rollup covers the range.
+    public func metricPeak(
+        machineId: String, metric: Metric, resolution: Int64, from: Double, to: Double
+    ) throws(DatabaseError) -> Double? {
+        try rows(
+            "SELECT MAX(max) FROM rollup WHERE machine_id=? AND resolution=? AND metric=? AND ts>=? AND ts<?"
+        ) { s in
+            s.bind(1, machineId)
+            s.bind(2, resolution)
+            s.bind(3, metric.rawValue)
+            s.bind(4, Int64(from.rounded(.down)))
+            s.bind(5, Int64(to.rounded(.up)))
+        } read: { $0.isNull(0) ? nil : $0.double(0) }.first ?? nil
+    }
+
+    public func limitSeconds(
+        machineId: String, resolution: Int64, from: Double, to: Double
+    ) throws(DatabaseError) -> [LimitKind: Double] {
+        var totals: [LimitKind: Double] = [:]
+        for row in try limitRows(
+            machineId, resolution: resolution, from: Date(timeIntervalSince1970: from.rounded(.down)),
+            to: Date(timeIntervalSince1970: to.rounded(.up)))
+        {
+            totals[row.kind, default: 0] += row.seconds
+        }
+        return totals
+    }
+
+    /// The worst memory-pressure level among raw samples in [from, to); nil once they have aged out.
+    public func maxPressure(machineId: String, from: Double, to: Double) throws(DatabaseError) -> Int? {
+        try rows("SELECT MAX(pressure) FROM samples WHERE machine_id=? AND ts>=? AND ts<?") { s in
+            bindSeconds(s, machineId, from, to)
+        } read: { $0.isNull(0) ? nil : Int($0.int64(0)) }.first ?? nil
+    }
+
+    /// The newest tick that recorded workload groups.
+    public func latestGroupSample(machineId: String) throws(DatabaseError) -> Double? {
+        try rows("SELECT MAX(ts) FROM group_samples WHERE machine_id=?") { s in
+            s.bind(1, machineId)
+        } read: { $0.isNull(0) ? nil : $0.double(0) }.first ?? nil
+    }
+
+    /// The newest minute of top processes, by kind and rank.
+    public func latestTopProcesses(machineId: String) throws(DatabaseError) -> [TopProcess] {
+        try rows(
+            """
+            SELECT kind, name, group_id, value FROM top_procs_1m
+            WHERE machine_id=?1 AND ts=(SELECT MAX(ts) FROM top_procs_1m WHERE machine_id=?1) ORDER BY kind, rank
+            """
+        ) { s in s.bind(1, machineId) } read: {
+            TopProcess(kind: $0.string(0), name: $0.string(1), group: $0.string(2), value: $0.double(3))
+        }
+    }
+
+    /// Each process's peak minute in [from, to), largest first within each kind.
+    public func topProcesses(machineId: String, from: Double, to: Double) throws(DatabaseError) -> [TopProcess] {
+        try rows(
+            """
+            SELECT kind, name, group_id, MAX(value) FROM top_procs_1m
+            WHERE machine_id=? AND ts>=? AND ts<? GROUP BY kind, name ORDER BY kind, 4 DESC, name
+            """
+        ) { s in bindSeconds(s, machineId, from, to) } read: {
+            TopProcess(kind: $0.string(0), name: $0.string(1), group: $0.string(2), value: $0.double(3))
+        }
+    }
+
+    /// Runs not yet closed, each with its newest usage minute (zero when it has none yet).
+    public func openAgentRuns(machineId: String, limit: Int) throws(DatabaseError) -> [RunActivity] {
+        try rows(
+            """
+            SELECT r.tool, r.started, u.ts, u.cpu_seconds, u.peak_footprint, u.active_seconds
+            FROM agent_runs r LEFT JOIN run_usage u
+                ON u.run_id = r.run_id AND u.ts = (SELECT MAX(ts) FROM run_usage WHERE run_id = r.run_id)
+            WHERE r.machine_id=? AND r.ended IS NULL ORDER BY r.started LIMIT ?
+            """
+        ) { s in
+            s.bind(1, machineId)
+            s.bind(2, Int64(limit))
+        } read: { s in
+            RunActivity(
+                tool: s.string(0), started: s.double(1), ended: nil, lastUsage: s.isNull(2) ? nil : s.double(2),
+                cpuSeconds: s.double(3), peakFootprint: UInt64(clamping: s.int64(4)), activeSeconds: s.double(5))
+        }
+    }
+
+    /// Runs with usage in [from, to) and that usage summed, busiest first.
+    public func agentRunActivity(
+        machineId: String, from: Double, to: Double, limit: Int
+    ) throws(DatabaseError) -> [RunActivity] {
+        try rows(
+            """
+            SELECT r.tool, r.started, r.ended, MAX(u.ts), SUM(u.cpu_seconds), MAX(u.peak_footprint), SUM(u.active_seconds)
+            FROM run_usage u JOIN agent_runs r ON r.run_id = u.run_id
+            WHERE r.machine_id=? AND u.ts>=? AND u.ts<? GROUP BY r.run_id ORDER BY 5 DESC LIMIT ?
+            """
+        ) { s in
+            bindSeconds(s, machineId, from, to)
+            s.bind(4, Int64(limit))
+        } read: { s in
+            RunActivity(
+                tool: s.string(0), started: s.double(1), ended: s.isNull(2) ? nil : s.double(2), lastUsage: s.double(3),
+                cpuSeconds: s.double(4), peakFootprint: UInt64(clamping: s.int64(5)), activeSeconds: s.double(6))
+        }
+    }
+
+    public func events(machineId: String, from: Double, to: Double, limit: Int) throws(DatabaseError) -> [StoredEvent] {
+        try rows(
+            "SELECT ts, kind, payload FROM events WHERE machine_id=? AND ts>=? AND ts<? ORDER BY ts, rowid LIMIT ?"
+        ) { s in
+            bindSeconds(s, machineId, from, to)
+            s.bind(4, Int64(limit))
+        } read: { StoredEvent(ts: $0.double(0), kind: $0.string(1), payload: $0.string(2)) }
+    }
+
+    /// Leftovers flagged and not cleared before `before`, and the running byte total the last event carried.
+    public func leftoversBefore(machineId: String, before: Double) throws(DatabaseError) -> (count: Int, bytes: UInt64) {
+        let count = try rows(
+            """
+            SELECT COALESCE(SUM(CASE kind WHEN 'leftover' THEN 1 ELSE -1 END), 0) FROM events
+            WHERE machine_id=? AND kind IN ('leftover','leftover_cleared') AND ts<?
+            """
+        ) { s in
+            s.bind(1, machineId)
+            s.bind(2, Int64(before.rounded(.up)))
+        } read: { Int($0.int64(0)) }.first ?? 0
+        let bytes = try rows(
+            """
+            SELECT payload FROM events WHERE machine_id=? AND kind IN ('leftover','leftover_cleared') AND ts<?
+            ORDER BY ts DESC, rowid DESC LIMIT 1
+            """
+        ) { s in
+            s.bind(1, machineId)
+            s.bind(2, Int64(before.rounded(.up)))
+        } read: { s -> UInt64? in
+            try? JSONDecoder().decode([String: String].self, from: Data(s.string(0).utf8))["totalBytes"].flatMap { UInt64($0) }
+        }.first ?? nil
+        // A sidecar rebuilt from scratch can flag an item twice, so the running count is never shown below zero.
+        return (max(0, count), bytes ?? 0)
+    }
+
     // MARK: - Helpers
 
     private struct LimitRow {
@@ -461,6 +656,12 @@ public struct Queries {
         s.bind(1, machineId)
         s.bind(2, Int64(from.timeIntervalSince1970))
         s.bind(3, Int64(to.timeIntervalSince1970))
+    }
+
+    private func bindSeconds(_ s: Statement, _ machineId: String, _ from: Double, _ to: Double) {
+        s.bind(1, machineId)
+        s.bind(2, Int64(from.rounded(.down)))
+        s.bind(3, Int64(to.rounded(.up)))
     }
 
     private func rows<T>(_ sql: String, bind: (Statement) -> Void, read: (Statement) -> T) throws(DatabaseError) -> [T] {

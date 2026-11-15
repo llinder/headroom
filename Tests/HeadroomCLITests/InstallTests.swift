@@ -191,6 +191,22 @@ private final class Home {
 
     var bootstrapResults: [Int32] = []
     var sleeps: [TimeInterval] = []
+    /// CLIs the fake PATH lookup finds, by name, and what their `mcp list` prints.
+    var onPath: [String: String] = [:]
+    var addStatus: Int32 = 0
+    var runnerCalls: [[String]] = []
+
+    func runner(_ args: [String]) -> (status: Int32, stdout: String) {
+        runnerCalls.append(args)
+        let name = URL(filePath: args[0]).lastPathComponent
+        if args.dropFirst().starts(with: ["mcp", "list"]) { return (0, onPath[name] ?? "") }
+        if args.dropFirst().starts(with: ["mcp", "add"]) { return (addStatus, "") }
+        return (1, "")
+    }
+
+    func find(_ name: String) -> String? {
+        onPath[name] == nil ? nil : "/fake/bin/\(name)"
+    }
 
     func install(agents: Bool, bootstrapStatus: Int32 = 0) -> (Int32, [String], [String]) {
         var out: [String] = []
@@ -202,7 +218,7 @@ private final class Home {
                 guard args.first == "bootstrap" else { return 0 }
                 return self.bootstrapResults.isEmpty ? bootstrapStatus : self.bootstrapResults.removeFirst()
             },
-            sleep: { self.sleeps.append($0) },
+            sleep: { self.sleeps.append($0) }, runner: runner, find: find,
             out: { out.append($0) }, err: { err.append($0) })
         return (code, out, err)
     }
@@ -212,7 +228,8 @@ private final class Home {
         let code = Install.uninstall(
             home: home, dataDirectory: dir.appending(path: "data"), uid: 501,
             now: Date(timeIntervalSince1970: 1_800_000_001),
-            launchctl: { self.launchctlCalls.append($0); return 0 }, out: { out.append($0) }, err: { _ in })
+            launchctl: { self.launchctlCalls.append($0); return 0 }, runner: runner, find: find,
+            out: { out.append($0) }, err: { _ in })
         return (code, out)
     }
 }
@@ -454,5 +471,69 @@ private final class Home {
         let h = try Home()
         _ = h.uninstall()
         #expect(!FileManager.default.fileExists(atPath: h.home.appending(path: ".claude/settings.json").path))
+    }
+
+    @Test func mcpRegistersWhenAbsentAndSkipsWhenPresent() throws {
+        let h = try Home()
+        let abs = h.home.appending(path: ".local/bin/headroom").path
+        h.onPath = [
+            "claude": "Checking MCP server health…\n\nother: /bin/other mcp - ✔ Connected\n",
+            "codex": "Name      Command                Args\nheadroom  /old/headroom  mcp\n",
+        ]
+        let (code, out, _) = h.install(agents: true)
+        #expect(code == 0)
+        #expect(
+            h.runnerCalls == [
+                ["/fake/bin/claude", "mcp", "list"],
+                ["/fake/bin/claude", "mcp", "add", "--scope", "user", "headroom", "--", abs, "mcp"],
+                ["/fake/bin/codex", "mcp", "list"],
+            ])
+        #expect(out.contains("claude: registered the headroom MCP server"))
+        #expect(out.contains("codex: headroom MCP server already registered"))
+
+        h.runnerCalls = []
+        h.onPath = ["codex": "No MCP servers configured yet.\n"]
+        _ = h.install(agents: true)
+        #expect(
+            h.runnerCalls == [["/fake/bin/codex", "mcp", "list"], ["/fake/bin/codex", "mcp", "add", "headroom", "--", abs, "mcp"]])
+    }
+
+    @Test func mcpNameMustMatchExactly() throws {
+        let h = try Home()
+        h.onPath = ["claude": "headroom-dev: /x/headroom mcp - ✔ Connected\nnotes: /git/headroom/run - ✔ Connected\n"]
+        _ = h.install(agents: true)
+        #expect(h.runnerCalls.contains { $0.contains("add") })
+    }
+
+    @Test func mcpAddFailureIsReportedAndInstallSucceeds() throws {
+        let h = try Home()
+        h.onPath = ["claude": ""]
+        h.addStatus = 1
+        let (code, _, err) = h.install(agents: true)
+        #expect(code == 0)
+        #expect(err.contains { $0.contains("claude mcp add") && $0.contains("status 1") })
+
+        h.runnerCalls = []
+        _ = h.install(agents: false)
+        #expect(h.runnerCalls.isEmpty)
+    }
+
+    @Test func uninstallRemovesMCPRegistrations() throws {
+        let h = try Home()
+        h.onPath = ["claude": "", "codex": ""]
+        let (code, _) = h.uninstall()
+        #expect(code == 0)
+        #expect(
+            h.runnerCalls == [
+                ["/fake/bin/claude", "mcp", "remove", "--scope", "user", "headroom"],
+                ["/fake/bin/codex", "mcp", "remove", "headroom"],
+            ])
+    }
+
+    @Test func noCLIsOnPathRunsNothing() throws {
+        let h = try Home()
+        _ = h.install(agents: true)
+        _ = h.uninstall()
+        #expect(h.runnerCalls.isEmpty)
     }
 }

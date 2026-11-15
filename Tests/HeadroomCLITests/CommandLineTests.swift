@@ -132,4 +132,10 @@ private func tempDir() throws -> URL {
         #expect(throws: UsageError.self) { try parse(["headroom", "keeps", "x"]) }
         #expect(throws: UsageError.self) { try parse(["headroom", "leftovers", "--nope"]) }
     }
+
+    @Test func parseMCP() throws {
+        #expect(try parse(["headroom", "mcp"]) == .mcp)
+        #expect(throws: UsageError.self) { try parse(["headroom", "mcp", "--stdio"]) }
+        #expect(usageText.contains("  mcp "))
+    }
 }
