@@ -10,7 +10,9 @@ enum PreToolAdvice {
     static let staleSeconds = 60.0
     private static let leftoverTriggerBytes: UInt64 = 1_000_000_000
     private static let wrappers: Set<String> = ["time", "env", "sudo"]
-    private static let containerIntentPrefixes = ["docker run", "docker compose up", "kind create cluster", "docker buildx"]
+    /// Any use of these counts, not only commands that start containers: the marker is how leftover detection
+    /// knows the owning agent is still working with them.
+    private static let containerTools: Set<String> = ["docker", "kubectl", "kind", "helm"]
 
     static func trigger(_ s: LiveSnapshot, now: Double, config: AgentsConfig) -> AdviceTrigger? {
         guard now - s.timestamp <= staleSeconds else { return nil }
@@ -33,7 +35,7 @@ enum PreToolAdvice {
             }
             guard let head = words.first else { continue }
             let segment = words.joined(separator: " ")
-            if containerIntentPrefixes.contains(where: { hasPrefix(segment, $0) }) { intent = true }
+            if containerTools.contains(head) { intent = true }
             if kind == nil, heavy.contains(where: { hasPrefix(segment, $0) }) { kind = kindOf(head) }
         }
         return (kind, intent)

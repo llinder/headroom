@@ -43,11 +43,19 @@ public enum LeftoverDecision: Equatable, Sendable {
 
 public enum LeftoverPolicy {
     static let intentWindow = 600.0
+    /// Hook and recorder clocks are read separately, so a marker may land just after the container it announced.
+    static let clockSkew = 5.0
+    /// `temporary` still waits this long, so a pause between two commands doesn't flag an owner's containers.
+    static let temporaryIdle = 300.0
+    /// An exited agent is often restarted at once, and its resumed session needs time to show up as a new run.
+    static let exitGrace = 300.0
     private static let ownerDone = "the agent session that started it is done"
 
+    /// `liveReapers` and `goneReapers` are Testcontainers session ids whose Ryuk reaper is running, or was seen
+    /// running and has since gone. A session in neither (Ryuk disabled, or not seen yet) is decided by ownership.
     public static func decide(
-        _ item: LeftoverItem, startedAt: Double, facts: OwnershipFacts, keeps: KeepList, reapers: Set<String>,
-        now: Double, config: LeftoversConfig
+        _ item: LeftoverItem, startedAt: Double, facts: OwnershipFacts, keeps: KeepList,
+        liveReapers: Set<String>, goneReapers: Set<String>, now: Double, config: LeftoversConfig
     ) -> LeftoverDecision {
         if keeps.covers(item, now: now) { return .kept }
 
@@ -58,20 +66,20 @@ public enum LeftoverPolicy {
         case .duration(let seconds):
             return now - startedAt >= seconds ? .leftover(reason: "older than its \(label(seconds)) lifetime") : .notYet
         case .temporary:
-            idleThreshold = 0
+            idleThreshold = min(idleThreshold, temporaryIdle)
         case nil:
             break
         }
 
-        if item.kind == .testcontainers, let session = item.sessionId, !reapers.contains(session) {
-            return .leftover(reason: "its test run finished")
+        if item.kind == .testcontainers, let session = item.sessionId {
+            if liveReapers.contains(session) { return .notYet }
+            if goneReapers.contains(session) { return .leftover(reason: "its test run finished") }
         }
 
         if let owner = intentOwner(startedAt: startedAt, facts: facts) {
             let run = facts.runs[owner] ?? unrecordedRun(owner, facts: facts)
-            let decider = inheritor(of: run, facts: facts) ?? run
-            let done = isDone(decider, lastActivity: decider.lastIntent ?? decider.started,
-                              threshold: idleThreshold, now: now, facts: facts)
+            let decider = inheritor(of: run, facts: facts)?.run ?? run
+            let done = isDone(decider, lastActivity: lastActivity(decider), threshold: idleThreshold, now: now, facts: facts)
             return done ? .leftover(reason: ownerDone) : .notYet
         }
 
@@ -80,8 +88,10 @@ public enum LeftoverPolicy {
         if !owners.isEmpty {
             // Several runs active in the creation minute can't be told apart, so the item waits for all of them.
             let allDone = owners.allSatisfy { run in
-                let decider = inheritor(of: run, facts: facts) ?? run
-                return isDone(decider, lastActivity: decider.activeMinutes.last ?? decider.started,
+                if let heir = inheritor(of: run, facts: facts)?.run {
+                    return isDone(heir, lastActivity: lastActivity(heir), threshold: idleThreshold, now: now, facts: facts)
+                }
+                return isDone(run, lastActivity: run.activeMinutes.last ?? run.started,
                               threshold: idleThreshold, now: now, facts: facts)
             }
             return allDone ? .leftover(reason: ownerDone) : .notYet
@@ -95,7 +105,7 @@ public enum LeftoverPolicy {
     /// The run whose marker is the latest at or before the start, within the window; the closest marker wins.
     private static func intentOwner(startedAt: Double, facts: OwnershipFacts) -> ProcessKey? {
         facts.intents
-            .filter { $0.ts <= startedAt && startedAt - $0.ts <= intentWindow }
+            .filter { $0.ts <= startedAt + clockSkew && startedAt - $0.ts <= intentWindow }
             .max { $0.ts < $1.ts }?.root
     }
 
@@ -105,22 +115,31 @@ public enum LeftoverPolicy {
         return RunFacts(sessionIds: [], started: marks.min() ?? 0, ended: nil, lastIntent: marks.max(), activeMinutes: [])
     }
 
-    /// A resumed session runs under a new process, so a live run sharing a session id takes over an ended owner.
-    private static func inheritor(of run: RunFacts, facts: OwnershipFacts) -> RunFacts? {
-        guard run.ended != nil, !run.sessionIds.isEmpty else { return nil }
-        return facts.runs.values
-            .filter { $0.ended == nil && !$0.sessionIds.isDisjoint(with: run.sessionIds) }
-            .max { ($0.lastIntent ?? -.infinity) < ($1.lastIntent ?? -.infinity) }
+    /// Markers only come from container commands, so an agent busy with other work still counts as active
+    /// through its recorded CPU minutes; a minute's activity can run to its end.
+    private static func lastActivity(_ run: RunFacts) -> Double {
+        max(run.lastIntent ?? run.started, (run.activeMinutes.last ?? -.infinity) + 60)
     }
 
-    /// `temporary` drops the idle wait but still needs some awake time since the last activity, so an owner
-    /// active right now keeps its containers.
+    /// A resumed session runs under a new process, so a live run sharing a session id takes over an ended owner.
+    /// The most recently active one wins; ties go to the smaller key so the choice doesn't follow dictionary order.
+    static func inheritor(of run: RunFacts, facts: OwnershipFacts) -> (key: ProcessKey, run: RunFacts)? {
+        guard run.ended != nil, !run.sessionIds.isEmpty else { return nil }
+        return facts.runs
+            .filter { $0.value.ended == nil && !$0.value.sessionIds.isDisjoint(with: run.sessionIds) }
+            .max { lhs, rhs in
+                let l = lastActivity(lhs.value), r = lastActivity(rhs.value)
+                if l != r { return l < r }
+                return (lhs.key.pid, lhs.key.start) > (rhs.key.pid, rhs.key.start)
+            }
+            .map { (key: $0.key, run: $0.value) }
+    }
+
     private static func isDone(
         _ run: RunFacts, lastActivity: Double, threshold: Double, now: Double, facts: OwnershipFacts
     ) -> Bool {
-        if run.ended != nil { return true }
-        let idle = facts.awakeSeconds(lastActivity, now)
-        return idle > 0 && idle >= threshold
+        if let ended = run.ended { return now - ended >= exitGrace }
+        return facts.awakeSeconds(lastActivity, now) >= threshold
     }
 
     /// `Lifetime` keeps only seconds, so the label is rebuilt in the largest whole unit: `24h` reads as `1d`.

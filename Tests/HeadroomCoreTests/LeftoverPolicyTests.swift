@@ -31,10 +31,11 @@ private func facts(
 
 private func decide(
     _ item: LeftoverItem, startedAt: Double = t0, facts: OwnershipFacts = facts(), keeps: KeepList = KeepList(),
-    reapers: Set<String> = [], now: Double
+    liveReapers: Set<String> = [], goneReapers: Set<String> = [], now: Double
 ) -> LeftoverDecision {
     LeftoverPolicy.decide(
-        item, startedAt: startedAt, facts: facts, keeps: keeps, reapers: reapers, now: now, config: LeftoversConfig())
+        item, startedAt: startedAt, facts: facts, keeps: keeps, liveReapers: liveReapers, goneReapers: goneReapers,
+        now: now, config: LeftoversConfig())
 }
 
 struct LeftoverPolicyTests {
@@ -55,33 +56,55 @@ struct LeftoverPolicyTests {
             == .leftover(reason: "older than its 8h lifetime"))
     }
 
-    @Test func temporaryLeftoverAsSoonAsOwnerEnds() {
+    @Test func temporaryLeftoverAfterFiveIdleMinutes() {
         let temporary = item(lifetime: .temporary)
         let intents = [(ts: t0 - 30, root: a)]
         let live = facts(intents: intents, runs: [a: run(lastIntent: t0 + 100)])
         #expect(decide(temporary, facts: live, now: t0 + 100) == .notYet)
-
-        let ended = facts(intents: intents, runs: [a: run(ended: t0 + 120, lastIntent: t0 + 100)])
-        #expect(decide(temporary, facts: ended, now: t0 + 121)
+        #expect(decide(temporary, facts: live, now: t0 + 110) == .notYet)
+        #expect(decide(temporary, facts: live, now: t0 + 401)
             == .leftover(reason: "the agent session that started it is done"))
-        // A live owner that has been quiet for any awake time is enough; without the label it needs an hour.
-        #expect(decide(temporary, facts: live, now: t0 + 110)
-            == .leftover(reason: "the agent session that started it is done"))
-        #expect(decide(item(), facts: live, now: t0 + 110) == .notYet)
+        #expect(decide(item(), facts: live, now: t0 + 401) == .notYet)
     }
 
-    @Test func testcontainersWithoutReaper() {
+    @Test func recentActivityKeepsOwnerAlive() {
+        let minute = ((t0 + 5000) / 60).rounded(.down) * 60
+        let f = facts(intents: [(ts: t0 - 30, root: a)], runs: [a: run(lastIntent: t0 - 30, activeMinutes: [minute])])
+        #expect(decide(item(), facts: f, now: minute + 60 + 3599) == .notYet)
+        #expect(decide(item(), facts: f, now: minute + 60 + 3600)
+            == .leftover(reason: "the agent session that started it is done"))
+    }
+
+    @Test func inheritorActivityCounts() {
+        let minute = ((t0 + 6000) / 60).rounded(.down) * 60
+        let runs = [
+            a: run(sessions: ["sess"], ended: t0 + 600, lastIntent: t0 - 30),
+            b: run(sessions: ["sess"], started: t0 + 700, activeMinutes: [minute]),
+        ]
+        let f = facts(intents: [(ts: t0 - 30, root: a)], runs: runs)
+        #expect(decide(item(), facts: f, now: t0 + 7200) == .notYet)
+        #expect(decide(item(), facts: f, now: minute + 60 + 3600)
+            == .leftover(reason: "the agent session that started it is done"))
+    }
+
+    @Test func testcontainersReaperStates() {
         let tc = item(kind: .testcontainers, sessionId: "s1")
-        let owned = facts(intents: [(ts: t0 - 30, root: a)], runs: [a: run(lastIntent: t0 - 30)])
-        #expect(decide(tc, facts: owned, reapers: ["s2"], now: t0 + 60)
+        let endedOwner = facts(intents: [(ts: t0 - 30, root: a)], runs: [a: run(ended: t0, lastIntent: t0 - 30)])
+        #expect(decide(tc, facts: endedOwner, liveReapers: ["s1"], now: t0 + 7200) == .notYet)
+        #expect(decide(tc, facts: endedOwner, goneReapers: ["s1"], now: t0 + 60)
             == .leftover(reason: "its test run finished"))
-        #expect(decide(tc, facts: owned, reapers: ["s1"], now: t0 + 60) == .notYet)
+        #expect(decide(tc, facts: endedOwner, liveReapers: ["s2"], goneReapers: ["s3"], now: t0 + 7200)
+            == .leftover(reason: "the agent session that started it is done"))
+
+        // With Ryuk disabled there is never a reaper, so the item falls through to its owner.
+        let activeOwner = facts(intents: [(ts: t0 - 30, root: a)], runs: [a: run(lastIntent: t0 + 3000)])
+        #expect(decide(tc, facts: activeOwner, now: t0 + 3600) == .notYet)
     }
 
     @Test func closestIntentOwns() {
         let intents = [(ts: t0 - 300, root: a), (ts: t0 - 30, root: b)]
         let runs = [a: run(lastIntent: t0 + 7000), b: run(ended: t0 + 100, lastIntent: t0 - 30)]
-        #expect(decide(item(), facts: facts(intents: intents, runs: runs), now: t0 + 200)
+        #expect(decide(item(), facts: facts(intents: intents, runs: runs), now: t0 + 400)
             == .leftover(reason: "the agent session that started it is done"))
 
         let flipped = [a: run(ended: t0 + 100, lastIntent: t0 - 300), b: run(lastIntent: t0 + 7000)]
@@ -153,6 +176,55 @@ struct LeftoverPolicyTests {
         let f = facts(intents: [(ts: t0 - 30, root: a)])
         #expect(decide(item(), facts: f, now: t0 + 1800) == .notYet)
         #expect(decide(item(), facts: f, now: t0 + 3570)
+            == .leftover(reason: "the agent session that started it is done"))
+    }
+
+    @Test func intentsAllowFiveSecondsOfClockSkew() {
+        let runs = [a: run(ended: t0, lastIntent: t0 + 5), b: run(lastIntent: t0 + 7000)]
+        let skewed = facts(intents: [(ts: t0 + 5, root: a)], runs: runs)
+        #expect(decide(item(), facts: skewed, now: t0 + 600)
+            == .leftover(reason: "the agent session that started it is done"))
+        let tooLate = facts(intents: [(ts: t0 + 6, root: a)], runs: runs)
+        #expect(decide(item(), facts: tooLate, now: t0 + 600) == .notYet)
+    }
+
+    @Test func endedOwnerGetsFiveMinutesOfGrace() {
+        let f = facts(intents: [(ts: t0 - 30, root: a)], runs: [a: run(ended: t0 + 100, lastIntent: t0 - 30)])
+        #expect(decide(item(), facts: f, now: t0 + 399) == .notYet)
+        #expect(decide(item(), facts: f, now: t0 + 400)
+            == .leftover(reason: "the agent session that started it is done"))
+    }
+
+    @Test func inheritorIsTheMostRecentlyActiveLiveRun() {
+        let c = ProcessKey(pid: 300, start: 3_000)
+        let runs = [
+            a: run(sessions: ["sess"], ended: t0 + 600, lastIntent: t0 - 30),
+            b: run(sessions: ["sess"], started: t0 + 5000),
+            c: run(sessions: ["sess"], started: t0 + 700),
+        ]
+        let f = facts(intents: [(ts: t0 - 30, root: a)], runs: runs)
+        #expect(decide(item(), facts: f, now: t0 + 7200) == .notYet)
+
+        let tied = [
+            a: run(sessions: ["sess"], ended: t0 + 600),
+            c: run(sessions: ["sess"], started: t0 + 700),
+            b: run(sessions: ["sess"], started: t0 + 700),
+        ]
+        let owner = tied[a] ?? run()
+        for _ in 0..<20 {
+            #expect(LeftoverPolicy.inheritor(of: owner, facts: facts(runs: tied))?.key == b)
+        }
+    }
+
+    @Test func fallbackWaitsForEveryActiveOwner() {
+        let minute = (t0 / 60).rounded(.down) * 60
+        let runs = [
+            a: run(ended: t0 + 120, activeMinutes: [minute]),
+            b: run(activeMinutes: [minute - 60, minute + 3000]),
+        ]
+        #expect(decide(item(), facts: facts(runs: runs), now: t0 + 3600) == .notYet)
+        let both = [a: run(ended: t0 + 120, activeMinutes: [minute]), b: run(ended: t0 + 200, activeMinutes: [minute])]
+        #expect(decide(item(), facts: facts(runs: both), now: t0 + 600)
             == .leftover(reason: "the agent session that started it is done"))
     }
 }

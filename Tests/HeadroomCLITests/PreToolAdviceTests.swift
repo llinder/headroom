@@ -55,6 +55,21 @@ import Testing
         #expect(PreToolAdvice.classify("docker buildx build .", heavy: heavy).containerIntent)
     }
 
+    @Test func anyContainerToolCommandIsAnIntent() {
+        let heavy = config.heavyCommands
+        for command in [
+            "docker ps", "docker logs -f web", "sudo docker exec -it db psql", "A=1 time kubectl get pods",
+            "kind get clusters", "helm upgrade --install x ./chart", "ls && env K=v helm list", "cat f | kubectl apply -f -",
+        ] {
+            #expect(PreToolAdvice.classify(command, heavy: heavy).containerIntent, "\(command)")
+        }
+        for command in ["dockerd", "echo docker run x", "kindle", "helmfile sync", "ls docker"] {
+            #expect(!PreToolAdvice.classify(command, heavy: heavy).containerIntent, "\(command)")
+        }
+        #expect(PreToolAdvice.classify("docker ps", heavy: heavy).kind == nil)
+        #expect(PreToolAdvice.classify("helm list", heavy: heavy).kind == nil)
+    }
+
     @Test func adviceTextExact() {
         let s = snap(swapUsed: 14_000_000_000, growth: 600_000_000)
         let critical = "headroom: memory pressure is critical (swap 14.0 GB, +0.6 GB/min)."

@@ -70,7 +70,7 @@ private final class Fixture {
 
     @Test func ownershipFactsFromSeededDB() throws {
         let f = try Fixture()
-        let since = Double(at(39, 0)), now = Double(at(40, 0))
+        let since = Double(at(38, 23, 50)), now = Double(at(40, 0))
         try f.db.exec("""
             INSERT INTO agent_runs VALUES(1, 'm1', 'claude', 10, 1000, \(at(5, 0)), NULL);
             INSERT INTO agent_runs VALUES(2, 'm1', 'codex', 20, 2000, \(at(38, 0)), \(at(38, 23, 55)));
@@ -89,12 +89,9 @@ private final class Fixture {
             """)
         for k in 0..<180 { try f.db.exec("INSERT INTO samples(machine_id, ts) VALUES('m1', \(at(39, 23) + Int64(k) * 10))") }
         try f.db.exec("INSERT INTO samples(machine_id, ts) VALUES('m2', \(at(39, 23, 1)))")
-        for k in 0..<10 { try f.rollup(60, at(5, 0) + Int64(k) * 60, .cpuBusy, avg: 0, max: 0, p95: 0) }
-        try f.rollup(60, at(5, 0), .memUsed, avg: 0, max: 0, p95: 0)
-        try f.rollup(60, at(5, 0, 30), .memUsed, avg: 0, max: 0, p95: 0)
-        try f.rollup(3600, at(6, 0), .cpuBusy, avg: 0, max: 0, p95: 0)
 
-        let facts = try Queries(db: f.db).ownershipFacts(machineId: machine, since: since, now: now)
+        let q = Queries(db: f.db)
+        let facts = try q.ownershipFacts(machineId: machine, since: since, now: now, idleThreshold: 3600)
 
         #expect(facts.intents.map(\.ts) == [Double(at(38, 23, 55)), Double(at(39, 4))])
         let one = ProcessKey(pid: 10, start: 1000), two = ProcessKey(pid: 20, start: 2000)
@@ -109,8 +106,36 @@ private final class Fixture {
         #expect(facts.awakeSeconds(Double(at(39, 23)), now) == 1800)
         #expect(facts.awakeSeconds(Double(at(39, 23, 10)), now) == 1200)
         #expect(facts.awakeSeconds(Double(at(39, 23)) + 5, Double(at(39, 23)) + 25) == 20)
-        #expect(facts.awakeSeconds(Double(at(5, 0)), now) == 2400)
+        #expect(facts.awakeSeconds(Double(at(5, 0)), now) == 1800)
         #expect(facts.awakeSeconds(now, now) == 0)
+
+        // 61 samples cover 600 s, so anything starting before the oldest of them is reported as the threshold.
+        let bounded = try q.ownershipFacts(machineId: machine, since: since, now: now, idleThreshold: 600)
+        #expect(bounded.awakeSeconds(Double(at(39, 23)), now) == 600)
+        #expect(bounded.awakeSeconds(Double(at(5, 0)), now) == 600)
+        #expect(bounded.awakeSeconds(Double(at(39, 23, 25)), now) == 300)
+        #expect(bounded.awakeSeconds(Double(at(39, 23, 19)) + 50, now) == 610)
+    }
+
+    @Test func ownershipNeedsSinceBeforeTheIntentWindow() throws {
+        let f = try Fixture()
+        let startedAt = Double(at(39, 12)), now = startedAt + 7200
+        try f.db.exec("""
+            INSERT INTO agent_runs VALUES(1, 'm1', 'claude', 10, 1000, \(at(39, 0)), \(at(39, 12, 2)));
+            INSERT INTO events VALUES('m1', \(at(39, 12) - 30), 'container_intent', '{"rootPid":"10","rootStart":"1000"}');
+            """)
+        let item = LeftoverItem(
+            key: "e/container/c", engine: "e", kind: .container, name: "c", containerIDs: ["c"], sessionId: nil,
+            lifetime: nil, cleanup: [])
+        func decide(since: Double) throws -> LeftoverDecision {
+            let facts = try Queries(db: f.db).ownershipFacts(machineId: machine, since: since, now: now, idleThreshold: 3600)
+            return LeftoverPolicy.decide(
+                item, startedAt: startedAt, facts: facts, keeps: KeepList(), liveReapers: [], goneReapers: [],
+                now: now, config: LeftoversConfig())
+        }
+        #expect(try decide(since: startedAt - 600) == .leftover(reason: "the agent session that started it is done"))
+        // A `since` after the start drops the owner's marker, so the item falls to the unowned rule.
+        #expect(try decide(since: startedAt + 60) == .notYet)
     }
 
     @Test func queriesDailyMetric() throws {

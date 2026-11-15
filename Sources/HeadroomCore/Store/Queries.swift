@@ -102,16 +102,21 @@ public struct Queries {
         }.compactMap { $0 }
     }
 
-    /// Ownership facts for the leftover pass. Intents, runs and active minutes reach back the 10-minute intent
-    /// window before `since`, so an item started at `since` still finds its owner. A run is included while live
-    /// or if it ended within that horizon; `lastIntent` is its latest marker in the horizon.
+    /// Ownership facts for the leftover pass, covering intents, runs that are live or ended at or after `since`, and
+    /// their active minutes from `since` on. `lastIntent` is a run's latest marker since then.
     ///
-    /// `awakeSeconds` counts 10 s samples in [a, b). Raw samples only live 30 days, so the part of a range
-    /// older than that counts whole minutes with a `cpuBusy` minute rollup instead. The counts are read up front,
-    /// back to the earliest run start, because the closure must be Sendable and can't hold the connection.
-    public func ownershipFacts(machineId: String, since: Double, now: Double) throws(DatabaseError) -> OwnershipFacts {
-        let horizon = since - LeftoverPolicy.intentWindow
-        let intents = try containerIntents(machineId: machineId, from: horizon, to: now + 1)
+    /// Precondition: `since` must be at or before the earliest candidate item's `startedAt - 600`, the intent
+    /// window. A later `since` drops the markers that name the item's owner, and the item looks unowned.
+    ///
+    /// `awakeSeconds` counts 10 s samples in [a, b), read up front because the closure must be Sendable and can't
+    /// hold the connection. Only the newest `idleThreshold / 10 + 1` samples are loaded, which is all the policy
+    /// needs to tell whether an owner has been idle that long: when that many exist, a range starting before the
+    /// oldest of them reports `idleThreshold` instead of its exact length. `idleThreshold` must be the largest
+    /// threshold the policy applies.
+    public func ownershipFacts(
+        machineId: String, since: Double, now: Double, idleThreshold: Double
+    ) throws(DatabaseError) -> OwnershipFacts {
+        let intents = try containerIntents(machineId: machineId, from: since, to: now + 1)
 
         let runRows = try rows(
             """
@@ -121,7 +126,7 @@ public struct Queries {
             """
         ) { s in
             s.bind(1, machineId)
-            s.bind(2, Int64(horizon.rounded(.down)))
+            s.bind(2, Int64(since.rounded(.down)))
         } read: { s in
             (
                 id: s.int64(0), key: ProcessKey(pid: Int32(clamping: s.int64(1)), start: UInt64(clamping: s.int64(2))),
@@ -133,7 +138,7 @@ public struct Queries {
         for intent in intents { lastIntent[intent.root] = max(lastIntent[intent.root] ?? intent.ts, intent.ts) }
 
         let usage = try db.prepare("SELECT ts FROM run_usage WHERE run_id=? AND ts>=? AND active_seconds>0 ORDER BY ts")
-        let firstMinute = Int64((horizon / 60).rounded(.down)) * 60 - 60
+        let firstMinute = Int64((since / 60).rounded(.down)) * 60
         var runs: [ProcessKey: RunFacts] = [:]
         var seen = Set<Int64>()
         for row in runRows {
@@ -149,37 +154,27 @@ public struct Queries {
                 lastIntent: lastIntent[row.key], activeMinutes: minutes)
         }
 
-        let windowStart = Int64(min(horizon, runRows.map(\.started).min() ?? horizon).rounded(.down))
-        let rawCutoff = now - 30 * 86_400
-        let sampleTimes = try rows(
-            "SELECT ts FROM samples WHERE machine_id=? AND ts>=? AND ts<? ORDER BY ts"
+        let limit = Int64(max(0, idleThreshold) / Self.sampleInterval) + 1
+        let samples: [Double] = try rows(
+            "SELECT ts FROM samples WHERE machine_id=? AND ts<? ORDER BY ts DESC LIMIT ?"
         ) { s in
             s.bind(1, machineId)
-            s.bind(2, max(windowStart, Int64(rawCutoff.rounded(.up))))
-            s.bind(3, Int64(now.rounded(.up)))
-        } read: { $0.double(0) }
-        let rollupMinutes = windowStart < Int64(rawCutoff) ? try rows(
-            "SELECT DISTINCT ts FROM rollup WHERE machine_id=? AND resolution=? AND metric=? AND ts>=? AND ts<? ORDER BY ts"
-        ) { s in
-            s.bind(1, machineId)
-            s.bind(2, Self.minute)
-            s.bind(3, Metric.cpuBusy.rawValue)
-            s.bind(4, windowStart)
-            s.bind(5, Int64(rawCutoff.rounded(.up)))
-        } read: { $0.double(0) } : []
+            s.bind(2, Int64(now.rounded(.up)))
+            s.bind(3, limit)
+        } read: { $0.double(0) }.reversed()
+        let saturated = samples.count == Int(limit)
+        let oldest = samples.first ?? now
 
         let interval = Self.sampleInterval
         return OwnershipFacts(intents: intents, runs: runs) { a, b in
             guard b > a else { return 0 }
-            let recent = Self.count(sampleTimes, from: max(a, rawCutoff), to: b) * interval
-            let older = a < rawCutoff ? Self.count(rollupMinutes, from: a, to: min(b, rawCutoff)) * 60 : 0
-            return recent + older
+            if saturated && a < oldest { return idleThreshold }
+            return Self.count(samples, from: a, to: b) * interval
         }
     }
 
     /// Elements of an ascending array in [from, to).
     private static func count(_ sorted: [Double], from: Double, to: Double) -> Double {
-        guard to > from else { return 0 }
         func lowerBound(_ x: Double) -> Int {
             var lo = 0, hi = sorted.count
             while lo < hi {
