@@ -58,10 +58,12 @@ struct KeepListTests {
         let (empty, w1) = KeepList.load(from: url)
         #expect(empty.entries.isEmpty)
         #expect(w1 == nil)
+        #expect(empty.skipped == 0)
         try Data(#"{"entries":[{"name":"a"},{"nope":1},{"name":"b","until":9}]}"#.utf8).write(to: url)
         let (list, w2) = KeepList.load(from: url)
         #expect(list.entries == [KeepEntry(name: "a"), KeepEntry(name: "b", until: 9)])
-        #expect(w2 == nil)
+        #expect(list.skipped == 1)
+        #expect(w2 == "keeps.json: 1 entry could not be read and were ignored")
     }
 
     @Test func keepSaveIsAtomic() throws {

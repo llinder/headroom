@@ -13,6 +13,10 @@ public struct KeepEntry: Codable, Sendable, Equatable {
 
 public struct KeepList: Codable, Sendable, Equatable {
     public var entries: [KeepEntry]
+    /// Entries that could not be read at load time; not encoded. Callers must not save over a file with skipped entries.
+    public private(set) var skipped = 0
+
+    private enum CodingKeys: String, CodingKey { case entries }
 
     public init(entries: [KeepEntry] = []) {
         self.entries = entries
@@ -29,12 +33,16 @@ public struct KeepList: Codable, Sendable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let lossy = try c.decodeIfPresent([LossyEntry].self, forKey: .entries) ?? []
         entries = lossy.compactMap(\.entry)
+        skipped = lossy.count - entries.count
     }
 
     public static func load(from url: URL) -> (KeepList, warning: String?) {
         guard FileManager.default.fileExists(atPath: url.path) else { return (KeepList(), nil) }
         do {
-            return (try JSONDecoder().decode(KeepList.self, from: Data(contentsOf: url)), nil)
+            let list = try JSONDecoder().decode(KeepList.self, from: Data(contentsOf: url))
+            guard list.skipped > 0 else { return (list, nil) }
+            let noun = list.skipped == 1 ? "entry" : "entries"
+            return (list, "\(url.lastPathComponent): \(list.skipped) \(noun) could not be read and were ignored")
         } catch {
             return (KeepList(), "ignoring \(url.path): \(error.localizedDescription)")
         }

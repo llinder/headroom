@@ -74,11 +74,14 @@ struct LeftoverItemsTests {
         let nasty = ["$(rm)", "a`b`", "line\nbreak", "-rf"]
         let cs = nasty.map { c("id-" + $0, $0, labels: ["com.docker.compose.project": $0]) }
         let items = LeftoverGrouper.group(cs, engine: "e", ignore: IgnoreRules()).items
+        #expect(items.count == nasty.count)
         for (item, name) in zip(items, nasty) {
             #expect(item.cleanup == ["docker --context 'e' compose -p '\(name)' down"])
         }
         let singles = nasty.map { c("i" + $0, $0) }
-        for item in LeftoverGrouper.group(singles, engine: "e", ignore: IgnoreRules()).items {
+        let singleItems = LeftoverGrouper.group(singles, engine: "e", ignore: IgnoreRules()).items
+        #expect(singleItems.count == nasty.count)
+        for item in singleItems {
             #expect(item.cleanup[0].hasPrefix("docker --context 'e' rm -f 'i"))
             #expect(item.cleanup[0].hasSuffix("'"))
         }
