@@ -102,6 +102,95 @@ public struct Queries {
         }.compactMap { $0 }
     }
 
+    /// Ownership facts for the leftover pass. Intents, runs and active minutes reach back the 10-minute intent
+    /// window before `since`, so an item started at `since` still finds its owner. A run is included while live
+    /// or if it ended within that horizon; `lastIntent` is its latest marker in the horizon.
+    ///
+    /// `awakeSeconds` counts 10 s samples in [a, b). Raw samples only live 30 days, so the part of a range
+    /// older than that counts whole minutes with a `cpuBusy` minute rollup instead. The counts are read up front,
+    /// back to the earliest run start, because the closure must be Sendable and can't hold the connection.
+    public func ownershipFacts(machineId: String, since: Double, now: Double) throws(DatabaseError) -> OwnershipFacts {
+        let horizon = since - LeftoverPolicy.intentWindow
+        let intents = try containerIntents(machineId: machineId, from: horizon, to: now + 1)
+
+        let runRows = try rows(
+            """
+            SELECT r.run_id, r.root_pid, r.root_start, r.started, r.ended, s.session_id
+            FROM agent_runs r LEFT JOIN agent_run_sessions s ON s.run_id = r.run_id
+            WHERE r.machine_id=? AND (r.ended IS NULL OR r.ended>=?)
+            """
+        ) { s in
+            s.bind(1, machineId)
+            s.bind(2, Int64(horizon.rounded(.down)))
+        } read: { s in
+            (
+                id: s.int64(0), key: ProcessKey(pid: Int32(clamping: s.int64(1)), start: UInt64(clamping: s.int64(2))),
+                started: s.double(3), ended: s.isNull(4) ? nil : s.double(4), session: s.isNull(5) ? nil : s.string(5)
+            )
+        }
+
+        var lastIntent: [ProcessKey: Double] = [:]
+        for intent in intents { lastIntent[intent.root] = max(lastIntent[intent.root] ?? intent.ts, intent.ts) }
+
+        let usage = try db.prepare("SELECT ts FROM run_usage WHERE run_id=? AND ts>=? AND active_seconds>0 ORDER BY ts")
+        let firstMinute = Int64((horizon / 60).rounded(.down)) * 60 - 60
+        var runs: [ProcessKey: RunFacts] = [:]
+        var seen = Set<Int64>()
+        for row in runRows {
+            if let session = row.session { runs[row.key]?.sessionIds.insert(session) }
+            guard seen.insert(row.id).inserted else { continue }
+            usage.reset()
+            usage.bind(1, row.id)
+            usage.bind(2, firstMinute)
+            var minutes: [Double] = []
+            while try usage.step() { minutes.append(usage.double(0)) }
+            runs[row.key] = RunFacts(
+                sessionIds: row.session.map { [$0] } ?? [], started: row.started, ended: row.ended,
+                lastIntent: lastIntent[row.key], activeMinutes: minutes)
+        }
+
+        let windowStart = Int64(min(horizon, runRows.map(\.started).min() ?? horizon).rounded(.down))
+        let rawCutoff = now - 30 * 86_400
+        let sampleTimes = try rows(
+            "SELECT ts FROM samples WHERE machine_id=? AND ts>=? AND ts<? ORDER BY ts"
+        ) { s in
+            s.bind(1, machineId)
+            s.bind(2, max(windowStart, Int64(rawCutoff.rounded(.up))))
+            s.bind(3, Int64(now.rounded(.up)))
+        } read: { $0.double(0) }
+        let rollupMinutes = windowStart < Int64(rawCutoff) ? try rows(
+            "SELECT DISTINCT ts FROM rollup WHERE machine_id=? AND resolution=? AND metric=? AND ts>=? AND ts<? ORDER BY ts"
+        ) { s in
+            s.bind(1, machineId)
+            s.bind(2, Self.minute)
+            s.bind(3, Metric.cpuBusy.rawValue)
+            s.bind(4, windowStart)
+            s.bind(5, Int64(rawCutoff.rounded(.up)))
+        } read: { $0.double(0) } : []
+
+        let interval = Self.sampleInterval
+        return OwnershipFacts(intents: intents, runs: runs) { a, b in
+            guard b > a else { return 0 }
+            let recent = Self.count(sampleTimes, from: max(a, rawCutoff), to: b) * interval
+            let older = a < rawCutoff ? Self.count(rollupMinutes, from: a, to: min(b, rawCutoff)) * 60 : 0
+            return recent + older
+        }
+    }
+
+    /// Elements of an ascending array in [from, to).
+    private static func count(_ sorted: [Double], from: Double, to: Double) -> Double {
+        guard to > from else { return 0 }
+        func lowerBound(_ x: Double) -> Int {
+            var lo = 0, hi = sorted.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if sorted[mid] < x { lo = mid + 1 } else { hi = mid }
+            }
+            return lo
+        }
+        return Double(lowerBound(to) - lowerBound(from))
+    }
+
     /// Runs with usage recorded in the range, and the CPU seconds of that usage, so both describe one set. A run
     /// left open by a crash has no later usage, so it can't inflate ranges after it.
     public func agentRunTotals(machineId: String, from: Date, to: Date) throws(DatabaseError) -> (runs: Int, cpuSeconds: Double) {

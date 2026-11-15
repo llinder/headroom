@@ -68,6 +68,51 @@ private final class Fixture {
         #expect(got.map(\.root) == [ProcessKey(pid: 10, start: 1000), ProcessKey(pid: 30, start: 3000)])
     }
 
+    @Test func ownershipFactsFromSeededDB() throws {
+        let f = try Fixture()
+        let since = Double(at(39, 0)), now = Double(at(40, 0))
+        try f.db.exec("""
+            INSERT INTO agent_runs VALUES(1, 'm1', 'claude', 10, 1000, \(at(5, 0)), NULL);
+            INSERT INTO agent_runs VALUES(2, 'm1', 'codex', 20, 2000, \(at(38, 0)), \(at(38, 23, 55)));
+            INSERT INTO agent_runs VALUES(3, 'm1', 'claude', 30, 3000, \(at(30, 0)), \(at(38, 0)));
+            INSERT INTO agent_runs VALUES(4, 'm2', 'claude', 40, 4000, \(at(39, 0)), NULL);
+            INSERT INTO agent_run_sessions VALUES(1, 's1', NULL, 0);
+            INSERT INTO agent_run_sessions VALUES(1, 's2', NULL, 0);
+            INSERT INTO run_usage VALUES(1, \(at(39, 1)), 1, 0, 0, 30);
+            INSERT INTO run_usage VALUES(1, \(at(39, 2)), 1, 0, 0, 0);
+            INSERT INTO run_usage VALUES(1, \(at(39, 3)), 1, 0, 0, 5);
+            INSERT INTO run_usage VALUES(1, \(at(20, 0)), 1, 0, 0, 60);
+            INSERT INTO run_usage VALUES(2, \(at(38, 23, 50)), 1, 0, 0, 60);
+            INSERT INTO events VALUES('m1', \(at(38, 23, 55)), 'container_intent', '{"rootPid":"10","rootStart":"1000"}');
+            INSERT INTO events VALUES('m1', \(at(39, 4)), 'container_intent', '{"rootPid":"10","rootStart":"1000"}');
+            INSERT INTO events VALUES('m1', \(at(38, 23, 40)), 'container_intent', '{"rootPid":"20","rootStart":"2000"}');
+            """)
+        for k in 0..<180 { try f.db.exec("INSERT INTO samples(machine_id, ts) VALUES('m1', \(at(39, 23) + Int64(k) * 10))") }
+        try f.db.exec("INSERT INTO samples(machine_id, ts) VALUES('m2', \(at(39, 23, 1)))")
+        for k in 0..<10 { try f.rollup(60, at(5, 0) + Int64(k) * 60, .cpuBusy, avg: 0, max: 0, p95: 0) }
+        try f.rollup(60, at(5, 0), .memUsed, avg: 0, max: 0, p95: 0)
+        try f.rollup(60, at(5, 0, 30), .memUsed, avg: 0, max: 0, p95: 0)
+        try f.rollup(3600, at(6, 0), .cpuBusy, avg: 0, max: 0, p95: 0)
+
+        let facts = try Queries(db: f.db).ownershipFacts(machineId: machine, since: since, now: now)
+
+        #expect(facts.intents.map(\.ts) == [Double(at(38, 23, 55)), Double(at(39, 4))])
+        let one = ProcessKey(pid: 10, start: 1000), two = ProcessKey(pid: 20, start: 2000)
+        #expect(Set(facts.runs.keys) == [one, two])
+        #expect(facts.runs[one] == RunFacts(
+            sessionIds: ["s1", "s2"], started: Double(at(5, 0)), ended: nil, lastIntent: Double(at(39, 4)),
+            activeMinutes: [Double(at(39, 1)), Double(at(39, 3))]))
+        #expect(facts.runs[two] == RunFacts(
+            sessionIds: [], started: Double(at(38, 0)), ended: Double(at(38, 23, 55)), lastIntent: nil,
+            activeMinutes: [Double(at(38, 23, 50))]))
+
+        #expect(facts.awakeSeconds(Double(at(39, 23)), now) == 1800)
+        #expect(facts.awakeSeconds(Double(at(39, 23, 10)), now) == 1200)
+        #expect(facts.awakeSeconds(Double(at(39, 23)) + 5, Double(at(39, 23)) + 25) == 20)
+        #expect(facts.awakeSeconds(Double(at(5, 0)), now) == 2400)
+        #expect(facts.awakeSeconds(now, now) == 0)
+    }
+
     @Test func queriesDailyMetric() throws {
         let f = try Fixture()
         for (hour, max) in [(1, 0.5), (2, 0.9), (3, 0.7)] {
