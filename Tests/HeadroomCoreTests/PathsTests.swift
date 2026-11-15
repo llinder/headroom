@@ -11,6 +11,7 @@ import Testing
     #expect(paths.config.lastPathComponent == "config.json")
     #expect(paths.tiers.lastPathComponent == "tiers.json")
     #expect(paths.baseline.lastPathComponent == "baseline.json")
+    #expect(paths.pretool.path == "/tmp/hr/pretool")
 }
 
 @Test func pathsRootOverride() {

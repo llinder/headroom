@@ -23,8 +23,29 @@ public struct LimitConfig: Codable, Sendable, Equatable {
     }
 }
 
+public struct AgentsConfig: Codable, Sendable, Equatable {
+    public var heavyCommands = [
+        "go build", "go test", "go vet", "golangci-lint", "make", "docker build", "docker buildx",
+        "docker compose up", "docker run", "kind create cluster", "kubectl apply", "swift build", "swift test",
+        "cargo build", "cargo test", "npm test", "npm run build", "npx vitest", "pnpm test", "pytest", "bazel", "bazelisk",
+    ]
+    public var adviceMinutes = 5
+    public var swapGrowthBytesPerMin: Int64 = 268_435_456
+
+    public init() {}
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = AgentsConfig()
+        heavyCommands = try c.decodeIfPresent([String].self, forKey: .heavyCommands) ?? d.heavyCommands
+        adviceMinutes = try c.decodeIfPresent(Int.self, forKey: .adviceMinutes) ?? d.adviceMinutes
+        swapGrowthBytesPerMin = try c.decodeIfPresent(Int64.self, forKey: .swapGrowthBytesPerMin) ?? d.swapGrowthBytesPerMin
+    }
+}
+
 public struct HeadroomConfig: Codable, Sendable, Equatable {
     public var limits = LimitConfig()
+    public var agents = AgentsConfig()
     public var workdayMinAwakeSeconds = 7200
     public var agentActiveCoreFraction = 0.05
     public var capacityMaxLimitedShare = 0.05
@@ -37,6 +58,7 @@ public struct HeadroomConfig: Codable, Sendable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = HeadroomConfig()
         limits = try c.decodeIfPresent(LimitConfig.self, forKey: .limits) ?? d.limits
+        agents = try c.decodeIfPresent(AgentsConfig.self, forKey: .agents) ?? d.agents
         workdayMinAwakeSeconds = try c.decodeIfPresent(Int.self, forKey: .workdayMinAwakeSeconds) ?? d.workdayMinAwakeSeconds
         agentActiveCoreFraction = try c.decodeIfPresent(Double.self, forKey: .agentActiveCoreFraction) ?? d.agentActiveCoreFraction
         capacityMaxLimitedShare = try c.decodeIfPresent(Double.self, forKey: .capacityMaxLimitedShare) ?? d.capacityMaxLimitedShare

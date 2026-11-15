@@ -23,6 +23,7 @@ public struct Paths: Sendable {
     public var config: URL { root.appending(path: "config.json") }
     public var tiers: URL { root.appending(path: "tiers.json") }
     public var baseline: URL { root.appending(path: "baseline.json") }
+    public var pretool: URL { root.appending(path: "pretool", directoryHint: .isDirectory) }
 
     public func ensureRoot() throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

@@ -33,4 +33,20 @@ import Testing
         #expect(config == HeadroomConfig())
         #expect(warning == nil)
     }
+
+    @Test func agentsDefaultsAndPartial() throws {
+        let defaults = HeadroomConfig().agents
+        #expect(defaults.adviceMinutes == 5)
+        #expect(defaults.swapGrowthBytesPerMin == 268_435_456)
+        #expect(defaults.heavyCommands.count == 22)
+        #expect(defaults.heavyCommands.contains("go test"))
+
+        let url = try write(#"{"agents":{"adviceMinutes":2,"heavyCommands":["make"]}}"#)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let (config, warning) = HeadroomConfig.load(from: url)
+        #expect(warning == nil)
+        #expect(config.agents.adviceMinutes == 2)
+        #expect(config.agents.heavyCommands == ["make"])
+        #expect(config.agents.swapGrowthBytesPerMin == 268_435_456)
+    }
 }
