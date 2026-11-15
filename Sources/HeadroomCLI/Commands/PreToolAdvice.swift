@@ -10,7 +10,7 @@ enum PreToolAdvice {
     private static let wrappers: Set<String> = ["time", "env", "sudo"]
     /// Any use of these counts, not only commands that start containers: the marker is how leftover detection
     /// knows the owning agent is still working with them.
-    private static let containerTools: Set<String> = ["docker", "kubectl", "kind", "helm"]
+    private static let containerTools: Set<String> = ["docker", "docker-compose", "kubectl", "kind", "helm"]
 
     static func trigger(_ s: LiveSnapshot, now: Double, config: AgentsConfig) -> AdviceTrigger? {
         guard now - s.timestamp <= staleSeconds else { return nil }
@@ -22,7 +22,11 @@ enum PreToolAdvice {
 
     /// Subcommand paths that start containers, matched against a segment's first positional words.
     private static let startCommands: [String: [[String]]] = [
-        "docker": [["run"], ["start"], ["create"], ["compose", "up"], ["compose", "start"]],
+        "docker": [
+            ["run"], ["start"], ["create"], ["container", "run"], ["container", "start"], ["container", "create"],
+            ["compose", "up"], ["compose", "start"],
+        ],
+        "docker-compose": [["up"], ["start"]],
         "kind": [["create"]],
         "helm": [["install"], ["upgrade"]],
         "kubectl": [["apply"], ["create"], ["run"]],
@@ -32,6 +36,10 @@ enum PreToolAdvice {
         "docker": [
             "--context", "-c", "--host", "-H", "--config", "--log-level", "-l", "-f", "--file", "-p", "--project-name",
             "--project-directory", "--env-file", "--profile", "--ansi", "--progress", "--parallel",
+        ],
+        "docker-compose": [
+            "-f", "--file", "-p", "--project-name", "--project-directory", "--env-file", "--profile", "--ansi",
+            "-H", "--host", "--context", "-c", "--log-level",
         ],
         "kind": [],
         "helm": ["-n", "--namespace", "--kube-context", "--kubeconfig"],

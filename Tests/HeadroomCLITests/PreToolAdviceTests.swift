@@ -76,6 +76,8 @@ import Testing
             "docker --context orb run x", "docker compose -f dev.yml -p shop up", "kind create cluster --name dev",
             "helm install x ./chart", "helm upgrade --install x ./chart", "kubectl apply -f -", "kubectl -n ns create ns",
             "kubectl run tmp --image=busybox", "ls && sudo docker run x",
+            "docker container run x", "docker container start web", "docker --context orb container create x",
+            "docker-compose up -d", "docker-compose -f dev.yml start",
         ] {
             let result = PreToolAdvice.classify(command, heavy: [])
             #expect(result.containerIntent && result.start, "\(command)")
@@ -84,9 +86,15 @@ import Testing
             "docker ps", "docker compose ps", "docker compose down", "docker logs -f web", "docker stop web",
             "kind get clusters", "kind delete cluster", "helm list", "helm uninstall x", "kubectl get pods",
             "kubectl delete pod x", "docker --context run ps", "echo docker run x",
+            "docker container ls", "docker container stop web", "docker-compose ps", "docker-compose down",
         ] {
             #expect(!PreToolAdvice.classify(command, heavy: []).start, "\(command)")
         }
+    }
+
+    @Test func composeV1IsAContainerTool() {
+        #expect(PreToolAdvice.classify("docker-compose logs", heavy: []).containerIntent)
+        #expect(!PreToolAdvice.classify("docker-composer up", heavy: []).containerIntent)
     }
 
     @Test func adviceTextExact() {
