@@ -165,7 +165,7 @@ public enum LeftoverGrouper {
         return all.min { $0.seconds < $1.seconds }
     }
 
-    private static func quote(_ s: String) -> String {
+    public static func quote(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 

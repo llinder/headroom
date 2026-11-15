@@ -45,9 +45,11 @@ private func flagged(memory: UInt64?, started: Double) -> FlaggedItem {
             "docker/kind dev · no owner · 2.4 GB · up 3d4h",
             "  kind delete cluster --name dev",
             "  docker rm -f abc",
+            "  keep: headroom keep 'kind:dev'",
             "docker/kind dev · no owner · memory unknown · up 42m",
             "  kind delete cluster --name dev",
             "  docker rm -f abc",
+            "  keep: headroom keep 'kind:dev'",
         ])
     }
 
@@ -101,5 +103,79 @@ private func flagged(memory: UInt64?, started: Double) -> FlaggedItem {
             #expect(box.err == [message, message])
             #expect(try Data(contentsOf: box.paths.keeps) == Data(content.utf8))
         }
+    }
+
+    @Test func keepLineUsesMatchableKeyAndQuoting() throws {
+        let box = try Sandbox()
+        func item(_ kind: LeftoverKind, _ name: String, names: [String] = []) -> FlaggedItem {
+            FlaggedItem(
+                item: LeftoverItem(
+                    key: "k", engine: "docker", kind: kind, name: name, containerIDs: ["abc"], sessionId: nil, lifetime: nil,
+                    cleanup: ["docker rm -f 'my name'"], containerNames: names),
+                startedAt: 0, reason: "r", memoryBytes: nil, firstFlagged: 0)
+        }
+        try LeftoverState(items: [item(.compose, "shop"), item(.container, "web", names: ["it's web"])]).save(to: box.paths.leftovers)
+        _ = Leftovers.run(paths: box.paths, now: now, json: false, kept: false) { box.out.append($0) }
+        #expect(box.out.contains("  docker rm -f 'my name'"))
+        #expect(box.out.contains("  keep: headroom keep 'compose:shop'"))
+        #expect(box.out.contains("  keep: headroom keep 'it'\\''s web'"))
+        let name = "it's web"
+        #expect(KeepList(entries: [KeepEntry(name: name)]).covers(item(.container, "web", names: [name]).item, now: 0))
+    }
+
+    @Test func keepHintsAtMissingPrefix() throws {
+        let box = try Sandbox()
+        let group = FlaggedItem(
+            item: LeftoverItem(
+                key: "k", engine: "docker", kind: .kind, name: "dev", containerIDs: ["abc"], sessionId: nil, lifetime: nil,
+                cleanup: []),
+            startedAt: 0, reason: "r", memoryBytes: nil, firstFlagged: 0)
+        let single = FlaggedItem(
+            item: LeftoverItem(
+                key: "k2", engine: "docker", kind: .container, name: "web", containerIDs: ["def"], sessionId: nil,
+                lifetime: nil, cleanup: [], containerNames: ["web"]),
+            startedAt: 0, reason: "r", memoryBytes: nil, firstFlagged: 0)
+        try LeftoverState(items: [group, single]).save(to: box.paths.leftovers)
+        func keep(_ name: String) -> Int32 {
+            Leftovers.keep(name: name, forSeconds: nil, paths: box.paths, now: now, out: { box.out.append($0) }, err: { box.err.append($0) })
+        }
+        #expect(keep("dev") == 0)
+        #expect(box.err == ["note: \"dev\" matches no container; did you mean headroom keep kind:dev?"])
+        box.err = []
+        #expect(keep("kind:dev") == 0)
+        #expect(keep("web") == 0)
+        #expect(keep("other") == 0)
+        #expect(box.err.isEmpty)
+        #expect(KeepList.load(from: box.paths.keeps).0.entries.map(\.name) == ["dev", "kind:dev", "web", "other"])
+    }
+
+    @Test func failingSavePrintsNoSuccessLine() throws {
+        let box = try Sandbox()
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: box.paths.root.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: box.paths.root.path) }
+        #expect(Leftovers.keep(name: "a", forSeconds: nil, paths: box.paths, now: now, out: { box.out.append($0) }, err: { box.err.append($0) }) == 1)
+        #expect(box.out.isEmpty && box.err.count == 1)
+    }
+
+    @Test func keepReplacesSameNameEntry() throws {
+        let box = try Sandbox()
+        try KeepList(entries: [KeepEntry(name: "a", until: 5), KeepEntry(name: "b")]).save(to: box.paths.keeps)
+        #expect(Leftovers.keep(name: "a", forSeconds: nil, paths: box.paths, now: now, out: { box.out.append($0) }, err: { box.err.append($0) }) == 0)
+        #expect(KeepList.load(from: box.paths.keeps).0.entries == [KeepEntry(name: "b"), KeepEntry(name: "a")])
+    }
+
+    @Test func keepForTwoHoursThroughRun() throws {
+        let box = try Sandbox()
+        // run() resolves paths from HEADROOM_ROOT-less standard(); the parsed command and Leftovers.keep are the seam.
+        #expect(try parse(["headroom", "keep", "x", "--for", "2h"]) == .keep(name: "x", forSeconds: 7200))
+        _ = Leftovers.keep(name: "x", forSeconds: 7200, paths: box.paths, now: now, out: { box.out.append($0) }, err: { box.err.append($0) })
+        #expect(KeepList.load(from: box.paths.keeps).0.entries == [KeepEntry(name: "x", until: now.timeIntervalSince1970 + 7200)])
+    }
+
+    @Test func memoryRoundsLikeStatusLine() throws {
+        let box = try Sandbox()
+        try LeftoverState(items: [flagged(memory: 1_250_000_000, started: 0)]).save(to: box.paths.leftovers)
+        _ = Leftovers.run(paths: box.paths, now: now, json: false, kept: false) { box.out.append($0) }
+        #expect(box.out[0].contains("· 1.3 GB ·"))
     }
 }

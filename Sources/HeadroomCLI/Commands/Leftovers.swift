@@ -19,6 +19,7 @@ enum Leftovers {
             let age = TopRenderer.age(now.timeIntervalSince1970 - flagged.startedAt)
             out("\(item.engine)/\(item.kind.rawValue) \(item.name) · \(flagged.reason) · \(memory) · up \(age)")
             for command in item.cleanup { out("  \(command)") }
+            out("  keep: headroom keep \(LeftoverGrouper.quote(keepKey(item)))")
         }
         if kept { for entry in state.kept { out("\(entry.key) · kept (\(entry.why))") } }
         return 0
@@ -27,25 +28,53 @@ enum Leftovers {
     static func keep(
         name: String, forSeconds: Double?, paths: Paths, now: Date, out: (String) -> Void, err: (String) -> Void
     ) -> Int32 {
-        modify(paths: paths, err: err) { list in
+        let status = modify(paths: paths, err: err) { list in
             list.entries.removeAll { $0.name == name }
             list.entries.append(KeepEntry(name: name, until: forSeconds.map { now.timeIntervalSince1970 + $0 }))
-            out("keeping \(name)")
             return true
+        }
+        guard status == 0 else { return status }
+        out("keeping \(name)")
+        if let hint = unprefixedHint(name: name, items: LeftoverState.load(from: paths.leftovers).items) {
+            err("note: \"\(name)\" matches no container; did you mean headroom keep \(hint)?")
+        }
+        return 0
+    }
+
+    /// The string `KeepList.covers` matches for this item.
+    private static func keepKey(_ item: LeftoverItem) -> String {
+        switch item.kind {
+        case .kind: "kind:\(item.name)"
+        case .compose: "compose:\(item.name)"
+        case .testcontainers, .container: item.containerNames.first ?? item.name
         }
     }
 
+    /// A bare name that only names a kind or compose group is almost always a missed prefix.
+    private static func unprefixedHint(name: String, items: [FlaggedItem]) -> String? {
+        guard !name.hasPrefix("kind:"), !name.hasPrefix("compose:") else { return nil }
+        let bare = items.contains { flagged in
+            let item = flagged.item
+            let prefix = "\(item.engine)/"
+            let stripped = name.hasPrefix(prefix) ? String(name.dropFirst(prefix.count)) : name
+            return item.containerNames.contains(stripped) || (stripped.count >= 12 && item.containerIDs.contains { $0.hasPrefix(stripped) })
+        }
+        guard !bare else { return nil }
+        return items.map(\.item).first { ($0.kind == .kind || $0.kind == .compose) && $0.name == name }.map(keepKey)
+    }
+
     static func unkeep(name: String, paths: Paths, out: (String) -> Void, err: (String) -> Void) -> Int32 {
-        modify(paths: paths, err: err) { list in
+        let status = modify(paths: paths, err: err) { list in
             let before = list.entries.count
             list.entries.removeAll { $0.name == name }
             guard list.entries.count < before else {
                 err("headroom: \(name) is not in the keep list")
                 return false
             }
-            out("no longer keeping \(name)")
             return true
         }
+        if status == 0 { out("no longer keeping \(name)") }
+        return status
     }
 
     static func keeps(paths: Paths, now: Date, out: (String) -> Void, err: (String) -> Void) -> Int32 {
@@ -82,7 +111,8 @@ enum Leftovers {
     }
 
     private static func memoryText(_ bytes: UInt64) -> String {
-        let megabytes = bytes / 1_000_000
-        return megabytes < 1000 ? "\(megabytes) MB" : "\(megabytes / 100 / 10).\(megabytes / 100 % 10) GB"
+        guard bytes >= 1_000_000_000 else { return "\(bytes / 1_000_000) MB" }
+        let tenths = TopRenderer.clampedInt((Double(bytes) / 1e8).rounded(), upTo: 1e12)
+        return "\(tenths / 10).\(tenths % 10) GB"
     }
 }
