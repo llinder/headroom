@@ -126,6 +126,46 @@ private final class Fixture {
         #expect(facts.awakeSeconds(Double(at(39, 23)), now) == 30)
     }
 
+    @Test func leftoverPeakIncludesBytesEventsAndSeedsFromBeforeTheRange() throws {
+        let f = try Fixture()
+        try f.db.exec("""
+            INSERT INTO events VALUES('m1', \(at(0, 1)), 'leftover', '{"kind":"compose","ref":"a","bytes":"0","totalBytes":"0","totalCount":"1"}');
+            INSERT INTO events VALUES('m1', \(at(0, 2)), 'leftover_bytes', '{"totalBytes":"4000000000","totalCount":"1"}');
+            INSERT INTO events VALUES('m1', \(at(0, 3)), 'leftover', 'not json');
+            INSERT INTO events VALUES('m1', \(at(1, 5)), 'leftover_cleared', '{"kind":"compose","ref":"a","bytes":"4000000000","totalBytes":"0","totalCount":"0"}');
+            """)
+        let q = Queries(db: f.db)
+        #expect(try q.leftoverPeakBytes(machineId: machine, from: date(at(0, 0)), to: date(at(0, 23))) == 4_000_000_000,
+                "memory learned on a later pass reaches the peak")
+        #expect(try q.leftoverPeakBytes(machineId: machine, from: date(at(1, 0)), to: date(at(1, 4))) == 4_000_000_000,
+                "a container still held from before the range counts")
+        #expect(try q.leftoverPeakBytes(machineId: machine, from: date(at(1, 0)), to: date(at(1, 6))) == 4_000_000_000)
+        #expect(try q.leftoverPeakBytes(machineId: machine, from: date(at(2, 0)), to: date(at(2, 6))) == 0)
+        #expect(try q.leftoverPeakBytes(machineId: machine, from: date(at(-1, 0)), to: date(at(0, 0))) == nil)
+    }
+
+    @Test func leftoverCountPrefersTotalCount() throws {
+        let f = try Fixture()
+        // A sidecar rebuilt from scratch flagged the same item twice; the running sum would say 2.
+        try f.db.exec("""
+            INSERT INTO events VALUES('m1', \(at(0, 1)), 'leftover', '{"kind":"compose","ref":"a","bytes":"5","totalBytes":"5","totalCount":"1"}');
+            INSERT INTO events VALUES('m1', \(at(0, 2)), 'leftover', '{"kind":"compose","ref":"a","bytes":"5","totalBytes":"5","totalCount":"1"}');
+            INSERT INTO events VALUES('m1', \(at(0, 3)), 'leftover_bytes', '{"totalBytes":"9","totalCount":"1"}');
+            """)
+        let q = Queries(db: f.db)
+        #expect(try q.leftoversBefore(machineId: machine, before: Double(at(0, 2, 30))) == (count: 1, bytes: 5))
+        #expect(try q.leftoversBefore(machineId: machine, before: Double(at(0, 4))) == (count: 1, bytes: 9))
+
+        // Rows from before totalCount fall back to the running sum, which a bytes event doesn't move.
+        let old = try Fixture()
+        try old.db.exec("""
+            INSERT INTO events VALUES('m1', \(at(0, 1)), 'leftover', '{"kind":"compose","ref":"a","bytes":"5","totalBytes":"5"}');
+            INSERT INTO events VALUES('m1', \(at(0, 2)), 'leftover', '{"kind":"kind","ref":"b","bytes":"5","totalBytes":"10"}');
+            INSERT INTO events VALUES('m1', \(at(0, 3)), 'leftover_cleared', '{"kind":"kind","ref":"b","bytes":"5","totalBytes":"5"}');
+            """)
+        #expect(try Queries(db: old.db).leftoversBefore(machineId: machine, before: Double(at(0, 4))) == (count: 1, bytes: 5))
+    }
+
     @Test func ownershipNeedsSinceBeforeTheIntentWindow() throws {
         let f = try Fixture()
         let startedAt = Double(at(39, 12)), now = startedAt + 7200

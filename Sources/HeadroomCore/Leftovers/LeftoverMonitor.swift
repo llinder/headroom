@@ -194,37 +194,48 @@ public struct LeftoverMonitor: Sendable {
         return .success(containers)
     }
 
-    /// Clears come before new flags, and each event's `totalBytes` is the running sum after it, so the last event
-    /// of a pass carries the pass's total.
+    /// Clears come before new flags, and each event's `totalBytes` and `totalCount` are the running sum and count
+    /// after it, so the last event of a pass carries the pass's totals. Memory is often read a pass after the flag,
+    /// so a pass that only changes the total emits `leftover_bytes`; without it the report's peak would miss it.
     private func events(previous: [FlaggedItem], current: [FlaggedItem]) -> [LeftoverEvent] {
         let currentKeys = Set(current.map(\.item.key))
         let previousKeys = Set(previous.map(\.item.key))
         let cleared = previous.filter { !currentKeys.contains($0.item.key) }
         let added = current.filter { !previousKeys.contains($0.item.key) }
+        let stayed = current.filter { previousKeys.contains($0.item.key) }
 
-        var total = current.filter { previousKeys.contains($0.item.key) }
-            .reduce(0) { Self.saturatingAdd($0, $1.memoryBytes ?? 0) }
+        var total = stayed.reduce(0) { Self.saturatingAdd($0, $1.memoryBytes ?? 0) }
         total = cleared.reduce(total) { Self.saturatingAdd($0, $1.memoryBytes ?? 0) }
+        var count = stayed.count + cleared.count
 
         var out: [LeftoverEvent] = []
         for f in cleared {
             let bytes = f.memoryBytes ?? 0
             total = total >= bytes ? total - bytes : 0
-            out.append((kind: "leftover_cleared", payload: payload(f, bytes: bytes, total: total)))
+            count -= 1
+            out.append((kind: "leftover_cleared", payload: payload(f, bytes: bytes, total: total, count: count)))
         }
         for f in added {
             let bytes = f.memoryBytes ?? 0
             total = Self.saturatingAdd(total, bytes)
-            out.append((kind: "leftover", payload: payload(f, bytes: bytes, total: total)))
+            count += 1
+            out.append((kind: "leftover", payload: payload(f, bytes: bytes, total: total, count: count)))
+        }
+        let before = previous.reduce(0) { Self.saturatingAdd($0, $1.memoryBytes ?? 0) }
+        if out.isEmpty && total != before {
+            out.append((kind: "leftover_bytes", payload: ["totalBytes": String(total), "totalCount": String(count)]))
         }
         return out
     }
 
     /// Events go into SQLite, which never holds container names, so the key is reduced to a short hash. The machine
     /// id salts it, so a common name such as `compose/postgres` can't be matched across machines by its hash.
-    private func payload(_ f: FlaggedItem, bytes: UInt64, total: UInt64) -> [String: String] {
+    private func payload(_ f: FlaggedItem, bytes: UInt64, total: UInt64, count: Int) -> [String: String] {
         let digest = SHA256.hash(data: Data((machineId + "\n" + f.item.key).utf8)).map { String(format: "%02x", $0) }.joined()
-        return ["kind": f.item.kind.rawValue, "ref": String(digest.prefix(12)), "bytes": String(bytes), "totalBytes": String(total)]
+        return [
+            "kind": f.item.kind.rawValue, "ref": String(digest.prefix(12)), "bytes": String(bytes),
+            "totalBytes": String(total), "totalCount": String(count),
+        ]
     }
 
     static func saturatingAdd(_ a: UInt64, _ b: UInt64) -> UInt64 {

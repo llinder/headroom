@@ -303,7 +303,8 @@ private func fullText(_ doc: PDFDocument) -> String {
         let queries = Queries(db: f.db)
         let from = Date(timeIntervalSince1970: Double(at(5, 11)))
         let to = Date(timeIntervalSince1970: Double(at(5, 12)))
-        #expect(try queries.leftoverPeakBytes(machineId: id, from: from, to: to) == 1_500_000_000)
+        // The clear at `from` is inside the range, so the 2.5 GB held until then seeds the peak.
+        #expect(try queries.leftoverPeakBytes(machineId: id, from: from, to: to) == 2_500_000_000)
         let other = oldMachine.machineId
         let payload = #"{"kind":"compose","ref":"zz","bytes":"1","totalBytes":"9000000000"}"#
         try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 12)), 'leftover', '\(payload)')")
@@ -311,9 +312,11 @@ private func fullText(_ doc: PDFDocument) -> String {
         try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 12)), 'agent_warning', '{}')")
         try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 11)), 'agent_warning', '{}')")
         try f.exec("INSERT INTO events VALUES('\(other)', \(at(5, 11)), 'agent_warning', '{}')")
-        #expect(try queries.leftoverPeakBytes(machineId: id, from: from, to: to) == 1_500_000_000)
+        #expect(try queries.leftoverPeakBytes(machineId: id, from: from, to: to) == 2_500_000_000)
         #expect(try queries.agentWarningCounts(machineId: id, from: from, to: to) == ["critical": 1])
-        #expect(try queries.leftoverPeakBytes(machineId: id, from: to.addingTimeInterval(86_400), to: to.addingTimeInterval(172_800)) == nil)
+        #expect(try queries.leftoverPeakBytes(machineId: id, from: to.addingTimeInterval(86_400), to: to.addingTimeInterval(172_800))
+            == 9_000_000_000, "still held from before the range")
+        #expect(try queries.leftoverPeakBytes(machineId: id, from: Date(timeIntervalSince1970: 0), to: Date(timeIntervalSince1970: 1)) == nil)
     }
 
     @Test func agentWarningCountsByTrigger() throws {

@@ -198,8 +198,11 @@ Paths are resolved through symlinks and deduplicated, keeping the first context 
 
   It's local-only and is never copied into SQLite.
 - **Events in SQLite.** These go through the normal flush, with no schema change:
-  - `leftover`, with payload `kind`, `ref` (the first 12 hex characters of SHA256 of the key), `bytes` and `totalBytes`, the sum of all current leftovers after this change;
-  - `leftover_cleared`, with the same fields.
+  - `leftover`, with payload `kind`, `ref` (the first 12 hex characters of SHA256 of the key, salted with the machine id), `bytes`, `totalBytes`, the sum of all current leftovers after this change, and `totalCount`, the number flagged after it;
+  - `leftover_cleared`, with the same fields;
+  - `leftover_bytes`, with only `totalBytes` and `totalCount`, when a pass changes the total without flagging or clearing anything. Memory is usually read a pass after the flag, so without it the peak would miss that memory.
+
+  Readers take the count from the last event's `totalCount`. Rows written before it existed fall back to flags minus clears.
 - **Live state.** The phase 1 reserved bytes are used. The version stays 1, and zero means none:
 
 | Offset | Field |
@@ -216,7 +219,7 @@ Paths are resolved through symlinks and deduplicated, keeping the first context 
 - **`headroom keep` / `unkeep` / `keeps`:** manage the keep list.
 - **Report appendix:** two lines, with no names:
   - "Agents were advised to narrow work N times: A while memory was critical, B while swap was growing, C because abandoned containers held memory." Only the non-zero parts are listed. With one part the sentence has no breakdown, for example "Agents were advised to narrow work 2 times while swap was growing."
-  - "Abandoned containers held up to X GB at their peak." This is the maximum `totalBytes` from leftover events in the range.
+  - "Abandoned containers held up to X GB at their peak." This is the maximum `totalBytes` from the three leftover event kinds in the range, seeded with the last `totalBytes` before the range, so containers already held when the range opens count.
 
 ### Config additions (`config.json`, all optional with defaults)
 

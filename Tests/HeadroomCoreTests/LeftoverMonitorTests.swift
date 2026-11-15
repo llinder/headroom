@@ -112,6 +112,7 @@ private func wallNow() -> Double { Date().timeIntervalSince1970 }
         #expect(first.events.first?.kind == "leftover")
         #expect(first.events.first?.payload == [
             "kind": "container", "ref": ref(key), "bytes": String(200 << 20), "totalBytes": String(200 << 20),
+            "totalCount": "1",
         ])
         // The young container is inspected but not flagged; stats are fetched only for the flagged one.
         #expect(!server.requests.contains(statsPath(young.id)))
@@ -143,6 +144,7 @@ private func wallNow() -> Double { Date().timeIntervalSince1970 }
         #expect(second.events.first?.kind == "leftover_cleared")
         #expect(second.events.first?.payload == [
             "kind": "container", "ref": ref("orb/container/\(box.id)"), "bytes": String(64 << 20), "totalBytes": "0",
+            "totalCount": "0",
         ])
         #expect(second.events.first?.payload["ref"] == first.events.first?.payload["ref"])
     }
@@ -269,6 +271,28 @@ private func wallNow() -> Double { Date().timeIntervalSince1970 }
         #expect(second.state.items.count == 30)
         #expect(second.state.items.filter { $0.memoryBytes != nil }.count == 10)
         #expect(second.events.count == 10, "only the newly flagged items emit")
+    }
+
+    @Test func memoryLearnedAfterTheFlagEmitsABytesEvent() throws {
+        let now = wallNow()
+        let a = Box(id: hexID(1), name: "a", startedAt: now - 2 * day, usage: 700)
+        let b = Box(id: hexID(2), name: "b", startedAt: now - 2 * day, usage: 300)
+        let server = try FakeUnixHTTPServer(routes: engineRoutes([a, b]))
+        defer { server.stop() }
+        let db = try TempDB()
+        let m = monitor([("default", server)])
+        let first = m.pass(previous: LeftoverState(), facts: db.facts(now: now), keeps: KeepList(), now: now, deadline: wallNow() + 10)
+        #expect(first.events.map(\.payload["totalCount"]) == ["1", "2"])
+
+        // The flag landed before its memory was read, so its event carried 0 bytes.
+        var unknown = first.state
+        unknown.items[0].memoryBytes = nil
+        let second = m.pass(previous: unknown, facts: db.facts(now: now), keeps: KeepList(), now: now + 300, deadline: wallNow() + 10)
+        #expect(second.events.map(\.kind) == ["leftover_bytes"])
+        #expect(second.events.first?.payload == ["totalBytes": "1000", "totalCount": "2"])
+
+        let third = m.pass(previous: second.state, facts: db.facts(now: now), keeps: KeepList(), now: now + 600, deadline: wallNow() + 10)
+        #expect(third.events.isEmpty, "an unchanged total emits nothing")
     }
 
     @Test func memoryFromStatsEstimate() throws {
@@ -508,7 +532,7 @@ private func wallNow() -> Double { Date().timeIntervalSince1970 }
 
         let names = ["secret-db", "acme", "acme-web-1", "devcluster", "devcluster-control-plane"]
         for event in events {
-            #expect(Set(event.payload.keys) == ["kind", "ref", "bytes", "totalBytes"])
+            #expect(Set(event.payload.keys) == ["kind", "ref", "bytes", "totalBytes", "totalCount"])
             for value in event.payload.values {
                 #expect(!names.contains { value.contains($0) }, "payload value \(value) names a container")
             }

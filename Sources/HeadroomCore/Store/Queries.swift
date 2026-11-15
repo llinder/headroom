@@ -144,13 +144,39 @@ public struct Queries {
         return Dictionary(counts, uniquingKeysWith: +)
     }
 
-    /// The running total after each leftover event, so its maximum is the peak. Unparseable payloads are skipped.
+    static let leftoverKinds = "('leftover','leftover_cleared','leftover_bytes')"
+
+    /// The running total after each leftover event, so its maximum is the peak. The last total before the range
+    /// counts too, because containers already held when the range opens are still held at its start. Unparseable
+    /// payloads are skipped; nil means no leftover event at or before the range.
     public func leftoverPeakBytes(machineId: String, from: Date, to: Date) throws(DatabaseError) -> UInt64? {
+        let inRange = try rows(
+            "SELECT payload FROM events WHERE machine_id=? AND kind IN \(Self.leftoverKinds) AND ts>=? AND ts<?"
+        ) { s in bindRange(s, machineId, from, to) } read: { Self.leftoverTotals($0.string(0)).bytes }.compactMap { $0 }
+        let seed = try lastLeftoverTotals(machineId: machineId, before: from.timeIntervalSince1970)?.bytes
+        return (inRange + (seed.map { [$0] } ?? [])).max()
+    }
+
+    /// The newest leftover event before `before` whose payload carries a parseable `totalBytes`.
+    private func lastLeftoverTotals(machineId: String, before: Double) throws(DatabaseError) -> (bytes: UInt64, count: Int?)? {
         try rows(
-            "SELECT payload FROM events WHERE machine_id=? AND kind IN ('leftover','leftover_cleared') AND ts>=? AND ts<?"
-        ) { s in bindRange(s, machineId, from, to) } read: { s -> UInt64? in
-            try? JSONDecoder().decode([String: String].self, from: Data(s.string(0).utf8))["totalBytes"].flatMap { UInt64($0) }
-        }.compactMap { $0 }.max()
+            """
+            SELECT payload FROM events WHERE machine_id=? AND kind IN \(Self.leftoverKinds) AND ts<?
+            AND json_valid(payload) AND json_extract(payload, '$.totalBytes') IS NOT NULL
+            ORDER BY ts DESC, rowid DESC LIMIT 1
+            """
+        ) { s in
+            s.bind(1, machineId)
+            s.bind(2, Self.epoch(before.rounded(.up)))
+        } read: { s -> (bytes: UInt64, count: Int?)? in
+            let totals = Self.leftoverTotals(s.string(0))
+            return totals.bytes.map { (bytes: $0, count: totals.count) }
+        }.first ?? nil
+    }
+
+    private static func leftoverTotals(_ payload: String) -> (bytes: UInt64?, count: Int?) {
+        guard let fields = try? JSONDecoder().decode([String: String].self, from: Data(payload.utf8)) else { return (nil, nil) }
+        return (fields["totalBytes"].flatMap { UInt64($0) }, fields["totalCount"].flatMap { Int($0) })
     }
 
     /// Ownership facts for the leftover pass, covering intents, runs that are live or ended at or after `since`, and
@@ -586,30 +612,22 @@ public struct Queries {
         } read: { StoredEvent(ts: $0.double(0), kind: $0.string(1), payload: $0.string(2)) }
     }
 
-    /// Leftovers flagged and not cleared before `before`, and the running byte total the last event carried.
+    /// Leftovers flagged and not cleared before `before`, and the running byte total the last event carried. The
+    /// count is the last event's `totalCount`; rows written before it existed fall back to flags minus clears.
     public func leftoversBefore(machineId: String, before: Double) throws(DatabaseError) -> (count: Int, bytes: UInt64) {
+        let last = try lastLeftoverTotals(machineId: machineId, before: before)
+        if let last, let count = last.count { return (max(0, count), last.bytes) }
         let count = try rows(
             """
-            SELECT COALESCE(SUM(CASE kind WHEN 'leftover' THEN 1 ELSE -1 END), 0) FROM events
+            SELECT COALESCE(SUM(CASE kind WHEN 'leftover' THEN 1 WHEN 'leftover_cleared' THEN -1 ELSE 0 END), 0) FROM events
             WHERE machine_id=? AND kind IN ('leftover','leftover_cleared') AND ts<?
             """
         ) { s in
             s.bind(1, machineId)
             s.bind(2, Self.epoch(before.rounded(.up)))
         } read: { Int($0.int64(0)) }.first ?? 0
-        let bytes = try rows(
-            """
-            SELECT payload FROM events WHERE machine_id=? AND kind IN ('leftover','leftover_cleared') AND ts<?
-            ORDER BY ts DESC, rowid DESC LIMIT 1
-            """
-        ) { s in
-            s.bind(1, machineId)
-            s.bind(2, Self.epoch(before.rounded(.up)))
-        } read: { s -> UInt64? in
-            try? JSONDecoder().decode([String: String].self, from: Data(s.string(0).utf8))["totalBytes"].flatMap { UInt64($0) }
-        }.first ?? nil
         // A sidecar rebuilt from scratch can flag an item twice, so the running count is never shown below zero.
-        return (max(0, count), bytes ?? 0)
+        return (max(0, count), last?.bytes ?? 0)
     }
 
     // MARK: - Helpers
