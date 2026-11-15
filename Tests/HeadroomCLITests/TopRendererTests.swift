@@ -153,7 +153,7 @@ private func run(_ tool: AgentTool, pid: Int32, minutes: Double, cpu: Double, ac
             #expect(!lines.isEmpty)
             #expect(lines.allSatisfy { TopRenderer.displayWidth($0) <= 100 })
         }
-        #expect(TopRenderer.render(s, width: 100, height: 40).contains { $0.contains("9999h") })
+        #expect(TopRenderer.render(s, width: 100, height: 40).contains { $0.contains("416d15h") })
     }
 
     @Test func startedConvertsMicrosecondsToSeconds() {

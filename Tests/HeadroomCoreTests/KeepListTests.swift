@@ -63,7 +63,7 @@ struct KeepListTests {
         let (list, w2) = KeepList.load(from: url)
         #expect(list.entries == [KeepEntry(name: "a"), KeepEntry(name: "b", until: 9)])
         #expect(list.skipped == 1)
-        #expect(w2 == "keeps.json: 1 entry could not be read and were ignored")
+        #expect(w2 == "keeps.json: 1 entry could not be read and was ignored")
     }
 
     @Test func keepSaveIsAtomic() throws {

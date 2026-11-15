@@ -60,8 +60,20 @@ enum Status {
             machineId: machineId, from: now.addingTimeInterval(-86_400), to: now.addingTimeInterval(1))
         lines.append("headroomd CPU \(format(usage.avgCPU * 100, 1))% · memory \(format(Double(usage.maxFootprint) / megabyte, 1)) MB")
 
+        lines += dockerLines(state: LeftoverState.load(from: paths.leftovers), now: now)
+
         lines.append("agent hooks \(hooksInstalled(home: home) ? "installed" : "not installed")")
         return lines.joined(separator: "\n")
+    }
+
+    private static func dockerLines(state: LeftoverState, now: Date) -> [String] {
+        var lines = state.engines.map { engine in
+            let minutes = TopRenderer.clampedInt((now.timeIntervalSince1970 - engine.lastPass) / 60, upTo: 99_999)
+            return "docker \(engine.context) \(engine.ok ? "ok" : "unreachable") · last checked \(minutes)m ago"
+        }
+        if lines.isEmpty { lines = ["docker not checked yet"] }
+        if let warning = state.keepWarning { lines.append("keep list: \(warning)") }
+        return lines
     }
 
     private static func hooksInstalled(home: URL) -> Bool {

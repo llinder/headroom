@@ -87,4 +87,23 @@ private final class Fixture {
         #expect(out.isEmpty)
         #expect(errors.count == 1 && errors[0].hasPrefix("database unreadable: "))
     }
+
+    @Test func statusShowsEngines() throws {
+        let f = try Fixture()
+        #expect(try f.render().contains("docker not checked yet"))
+
+        let state = LeftoverState(
+            updated: now.timeIntervalSince1970,
+            engines: [
+                EngineStatus(context: "desktop-linux", socket: "/s", lastPass: now.timeIntervalSince1970 - 180, ok: true, failures: 0),
+                EngineStatus(context: "colima", socket: "/c", lastPass: now.timeIntervalSince1970 - 3600, ok: false, failures: 4),
+            ],
+            keepWarning: "keeps.json: 1 entry could not be read and was ignored")
+        try state.save(to: f.paths.leftovers)
+        let out = try f.render()
+        #expect(out.contains("docker desktop-linux ok · last checked 3m ago"))
+        #expect(out.contains("docker colima unreachable · last checked 60m ago"))
+        #expect(out.contains("keep list: keeps.json: 1 entry could not be read and was ignored"))
+        #expect(!out.contains("not checked yet"))
+    }
 }

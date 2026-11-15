@@ -111,4 +111,25 @@ private func tempDir() throws -> URL {
         #expect(stale.hasPrefix("not recording ○"))
         #expect(stale.contains("agent hooks not installed"))
     }
+
+    @Test func parseLeftoversAndKeep() throws {
+        #expect(try parse(["headroom", "leftovers"]) == .leftovers(json: false, kept: false))
+        #expect(try parse(["headroom", "leftovers", "--json", "--kept"]) == .leftovers(json: true, kept: true))
+        #expect(try parse(["headroom", "keep", "kind:dev"]) == .keep(name: "kind:dev", forSeconds: nil))
+        #expect(try parse(["headroom", "keep", "kind:dev", "--for", "8h"]) == .keep(name: "kind:dev", forSeconds: 28_800))
+        #expect(try parse(["headroom", "keep", "--for", "7d", "x"]) == .keep(name: "x", forSeconds: 604_800))
+        #expect(try parse(["headroom", "unkeep", "x"]) == .unkeep(name: "x"))
+        #expect(try parse(["headroom", "keeps"]) == .keeps)
+    }
+
+    @Test func keepWithBadDurationIsUsageError() {
+        for bad in ["keep", "temporary", "0h", "soon"] {
+            #expect(throws: UsageError.self) { try parse(["headroom", "keep", "x", "--for", bad]) }
+        }
+        #expect(throws: UsageError.self) { try parse(["headroom", "keep"]) }
+        #expect(throws: UsageError.self) { try parse(["headroom", "keep", "x", "--for"]) }
+        #expect(throws: UsageError.self) { try parse(["headroom", "unkeep"]) }
+        #expect(throws: UsageError.self) { try parse(["headroom", "keeps", "x"]) }
+        #expect(throws: UsageError.self) { try parse(["headroom", "leftovers", "--nope"]) }
+    }
 }

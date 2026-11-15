@@ -157,8 +157,11 @@ enum TopRenderer {
         return [ruled("agents (\(s.agents.count))", tail: "age ── CPU ── Mem ──", width: width)] + rows
     }
 
-    private static func age(_ seconds: Double) -> String {
+    /// Compact elapsed time shared by `top` and `leftovers`: `42m`, `2h1m`, `3d4h`.
+    static func age(_ seconds: Double) -> String {
         let minutes = clampedInt(seconds / 60, upTo: 9999 * 60)
-        return minutes < 60 ? "\(minutes)m" : "\(minutes / 60)h\(minutes % 60)m"
+        if minutes < 60 { return "\(minutes)m" }
+        let hours = minutes / 60
+        return hours < 24 ? "\(hours)h\(minutes % 60)m" : "\(hours / 24)d\(hours % 24)h"
     }
 }

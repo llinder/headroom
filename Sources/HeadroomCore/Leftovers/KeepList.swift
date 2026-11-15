@@ -41,8 +41,9 @@ public struct KeepList: Codable, Sendable, Equatable {
         do {
             let list = try JSONDecoder().decode(KeepList.self, from: Data(contentsOf: url))
             guard list.skipped > 0 else { return (list, nil) }
-            let noun = list.skipped == 1 ? "entry" : "entries"
-            return (list, "\(url.lastPathComponent): \(list.skipped) \(noun) could not be read and were ignored")
+            let phrase = list.skipped == 1 ? "1 entry could not be read and was ignored"
+                : "\(list.skipped) entries could not be read and were ignored"
+            return (list, "\(url.lastPathComponent): \(phrase)")
         } catch {
             return (KeepList(), "ignoring \(url.path): \(error.localizedDescription)")
         }
