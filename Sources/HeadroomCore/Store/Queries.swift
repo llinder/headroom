@@ -200,7 +200,10 @@ public struct Queries {
                 lastIntent: lastIntent[row.key], activeMinutes: minutes)
         }
 
-        let limit = Int64(max(0, idleThreshold) / Self.sampleInterval) + 1
+        // The threshold comes from config, so it is clamped before the conversion, which traps past Int64.max.
+        let maxThreshold = Double(LeftoversConfig.maxAfterMinutes) * 60
+        let threshold = idleThreshold.isNaN ? 0 : min(max(0, idleThreshold), maxThreshold)
+        let limit = Int64(threshold / Self.sampleInterval) + 1
         let samples: [Double] = try rows(
             "SELECT ts FROM samples WHERE machine_id=? AND ts<? ORDER BY ts DESC LIMIT ?"
         ) { s in
@@ -214,7 +217,7 @@ public struct Queries {
         let interval = Self.sampleInterval
         return OwnershipFacts(intents: intents, runs: runs) { a, b in
             guard b > a else { return 0 }
-            if saturated && a < oldest { return idleThreshold }
+            if saturated && a < oldest { return threshold }
             return Self.count(samples, from: a, to: b) * interval
         }
     }

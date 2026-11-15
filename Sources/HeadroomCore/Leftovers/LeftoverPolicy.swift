@@ -143,7 +143,8 @@ public enum LeftoverPolicy {
 
     /// `Lifetime` keeps only seconds, so the label is rebuilt in the largest whole unit: `24h` reads as `1d`.
     private static func label(_ seconds: Double) -> String {
-        let s = Int(seconds)
+        // A label or a hand-edited sidecar can hold any magnitude, and Int(_:) traps past Int.max.
+        let s = seconds.isFinite ? Int(min(max(seconds, 0), 1e15)) : 0
         if s % 86_400 == 0 { return "\(s / 86_400)d" }
         if s % 3600 == 0 { return "\(s / 3600)h" }
         return "\(s / 60)m"

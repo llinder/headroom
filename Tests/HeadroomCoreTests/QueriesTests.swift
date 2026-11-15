@@ -117,6 +117,15 @@ private final class Fixture {
         #expect(bounded.awakeSeconds(Double(at(39, 23, 19)) + 50, now) == 610)
     }
 
+    @Test func ownershipFactsSurviveAHugeIdleThreshold() throws {
+        let f = try Fixture()
+        let now = Double(at(40, 0))
+        for k in 0..<3 { try f.db.exec("INSERT INTO samples(machine_id, ts) VALUES('m1', \(at(39, 23) + Int64(k) * 10))") }
+        let facts = try Queries(db: f.db).ownershipFacts(
+            machineId: machine, since: now - 600, now: now, idleThreshold: Double(Int.max) * 60)
+        #expect(facts.awakeSeconds(Double(at(39, 23)), now) == 30)
+    }
+
     @Test func ownershipNeedsSinceBeforeTheIntentWindow() throws {
         let f = try Fixture()
         let startedAt = Double(at(39, 12)), now = startedAt + 7200

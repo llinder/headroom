@@ -64,6 +64,8 @@ public struct IgnoreRules: Codable, Sendable, Equatable {
 }
 
 public struct LeftoversConfig: Codable, Sendable, Equatable {
+    /// 31 days. Larger values would overflow once turned into a sample count, and mean "never" anyway.
+    public static let maxAfterMinutes = 44_640
     public var afterMinutes = 60
     public var unownedAfterHours = 24
     public var ignore = IgnoreRules()
@@ -73,7 +75,8 @@ public struct LeftoversConfig: Codable, Sendable, Equatable {
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = LeftoversConfig()
-        afterMinutes = try c.decodeIfPresent(Int.self, forKey: .afterMinutes) ?? d.afterMinutes
+        afterMinutes = min(
+            max(try c.decodeIfPresent(Int.self, forKey: .afterMinutes) ?? d.afterMinutes, 0), Self.maxAfterMinutes)
         unownedAfterHours = try c.decodeIfPresent(Int.self, forKey: .unownedAfterHours) ?? d.unownedAfterHours
         ignore = try c.decodeIfPresent(IgnoreRules.self, forKey: .ignore) ?? d.ignore
     }
