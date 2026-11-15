@@ -444,21 +444,27 @@ private let releaseBinary: URL? = {
         let dir = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
         var writer = try LiveStateWriter(url: Paths(root: dir).liveState)
-        let written = writer.write(pretoolSnapshot(age: Date().timeIntervalSince1970 - Self.pretoolNow + 3600, pressure: 4))
-        #expect(written)
 
-        var durations: [Double] = []
-        for _ in 0..<100 {
-            let start = DispatchTime.now().uptimeNanoseconds
-            let result = try runProcess(
-                binary.path, ["agent-hook", "pretool", "claude"], stdin: bashInput("go test ./..."),
-                environment: ["HEADROOM_ROOT": dir.path])
-            durations.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
-            #expect(result.status == 0)
-            #expect(result.stdout.isEmpty)
+        // A stale snapshot returns before stdin; a fresh one with no trigger also decodes stdin and classifies.
+        let offset = Date().timeIntervalSince1970 - Self.pretoolNow
+        for (label, snapshot) in [
+            ("stale", pretoolSnapshot(age: offset + 3600, pressure: 4)), ("fresh, no trigger", pretoolSnapshot(age: offset)),
+        ] {
+            let written = writer.write(snapshot)
+            #expect(written)
+            var durations: [Double] = []
+            for _ in 0..<100 {
+                let start = DispatchTime.now().uptimeNanoseconds
+                let result = try runProcess(
+                    binary.path, ["agent-hook", "pretool", "claude"], stdin: bashInput("go test ./..."),
+                    environment: ["HEADROOM_ROOT": dir.path])
+                durations.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
+                #expect(result.status == 0)
+                #expect(result.stdout.isEmpty, "\(label)")
+            }
+            let median = durations.sorted()[50]
+            #expect(median < 10, "\(label): median \(median) ms")
         }
-        let median = durations.sorted()[50]
-        #expect(median < 10, "median \(median) ms")
     }
 
     // Wall-clock budgets are flaky on a loaded machine, so they only run under `make bench`.
