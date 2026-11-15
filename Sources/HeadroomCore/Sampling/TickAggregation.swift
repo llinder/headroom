@@ -47,22 +47,30 @@ public enum TickAggregation {
     }
 }
 
-/// Swap change over roughly the last minute. Samples are capped so a long-running daemon keeps constant state.
+/// Swap change per minute, measured against a sample 55-90 s old. Nothing older is trusted: after a sleep the
+/// newest surviving sample is hours old and would report the whole sleep as one minute of growth.
 public struct SwapGrowth: Sendable {
     private static let window = 60.0
     private static let minAge = 55.0
-    private static let capacity = 8
+    private static let maxAge = 90.0
+    // 10 samples at the recorder's 10 s tick cover maxAge.
+    private static let capacity = 10
     private var samples: [(at: Double, used: UInt64)] = []
 
     public init() {}
 
     public mutating func record(swapUsed: UInt64, at: Double) -> Int64 {
         let reference = samples
-            .filter { at - $0.at >= Self.minAge }
+            .filter { (Self.minAge...Self.maxAge).contains(at - $0.at) }
             .min { abs(at - $0.at - Self.window) < abs(at - $1.at - Self.window) }
         samples.append((at: at, used: swapUsed))
         if samples.count > Self.capacity { samples.removeFirst() }
         guard let reference else { return 0 }
-        return Int64(clamping: Int128(swapUsed) - Int128(reference.used))
+        let delta = Double(swapUsed) - Double(reference.used)
+        let perMinute = delta * Self.window / (at - reference.at)
+        // Double(Int64.max) rounds up to 2^63, which Int64() would trap on, so compare strictly.
+        if perMinute >= Double(Int64.max) { return Int64.max }
+        if perMinute <= Double(Int64.min) { return Int64.min }
+        return Int64(perMinute.rounded())
     }
 }

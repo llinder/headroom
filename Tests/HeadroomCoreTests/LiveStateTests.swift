@@ -152,6 +152,23 @@ private let sample = LiveSnapshot(
             #expect(growth.record(swapUsed: UInt64(i) * 1_000_000_000, at: Double(i) * 10) == 0)
         }
     }
+
+    @Test func staleReferenceAfterSleepIsIgnored() {
+        var growth = SwapGrowth()
+        let gb: UInt64 = 1_000_000_000
+        for i in 0...6 { _ = growth.record(swapUsed: UInt64(i) * gb, at: Double(i) * 10) }
+        #expect(growth.record(swapUsed: 50 * gb, at: 36_000) == 0)
+        for i in 1...5 {
+            #expect(growth.record(swapUsed: 50 * gb, at: 36_000 + Double(i) * 10) == 0)
+        }
+    }
+
+    @Test func growthIsNormalisedToAMinute() {
+        var growth = SwapGrowth()
+        let gb: UInt64 = 1_000_000_000
+        _ = growth.record(swapUsed: 0, at: 0)
+        #expect(growth.record(swapUsed: 7 * gb, at: 70) == 6 * Int64(gb))
+    }
 }
 
 @Suite(.serialized) struct LiveStateSpeedTests {
