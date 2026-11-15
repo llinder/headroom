@@ -62,25 +62,31 @@ enum Status {
 
         lines += dockerLines(state: LeftoverState.load(from: paths.leftovers), now: now)
 
-        lines.append("agent hooks \(hooksInstalled(home: home) ? "installed" : "not installed")")
+        lines.append(hooksLine(home: home))
         return lines.joined(separator: "\n")
     }
 
     private static func dockerLines(state: LeftoverState, now: Date) -> [String] {
-        var lines = state.engines.map { engine in
-            let minutes = TopRenderer.clampedInt((now.timeIntervalSince1970 - engine.lastPass) / 60, upTo: 99_999)
-            return "docker \(engine.context) \(engine.ok ? "ok" : "unreachable") · last checked \(minutes)m ago"
+        func ago(_ ts: Double) -> String {
+            "last checked \(TopRenderer.clampedInt((now.timeIntervalSince1970 - ts) / 60, upTo: 99_999))m ago"
         }
-        if lines.isEmpty { lines = ["docker not checked yet"] }
+        var lines = state.engines.map { engine in
+            "docker \(engine.context) \(engine.ok ? "ok" : "unreachable") · \(ago(engine.lastPass))"
+        }
+        if lines.isEmpty { lines = [state.updated > 0 ? "docker no engines found · \(ago(state.updated))" : "docker not checked yet"] }
         if let warning = state.keepWarning { lines.append("keep list: \(warning)") }
         return lines
     }
 
-    private static func hooksInstalled(home: URL) -> Bool {
-        [".claude/settings.json", ".codex/hooks.json"].contains { path in
-            guard let text = try? String(contentsOf: home.appending(path: path), encoding: .utf8) else { return false }
-            return text.contains("headroom agent-hook")
-        }
+    /// The events headroom's hooks are installed for, in either agent's config. Advice needs PreToolUse, which a
+    /// phase 1 install didn't add.
+    private static func hooksLine(home: URL) -> String {
+        let files = [".claude/settings.json", ".codex/hooks.json"].compactMap { try? Data(contentsOf: home.appending(path: $0)) }
+        let found = ["SessionStart", "PreToolUse"].filter { event in files.contains { HookConfig.contains($0, event: event) } }
+        let hint = "run headroom install --agents"
+        if found.isEmpty { return "agent hooks: none · \(hint)" }
+        let listed = "agent hooks: " + found.joined(separator: ", ")
+        return found.contains("PreToolUse") ? listed : "\(listed) · PreToolUse missing, \(hint)"
     }
 
     private static func format(_ value: Double, _ digits: Int) -> String {

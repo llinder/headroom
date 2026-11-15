@@ -237,9 +237,34 @@ private final class MCPFixture {
 
     @Test func missingDatabaseIsToolError() throws {
         let f = try MCPFixture(seed: false)
-        let result = try f.call("current_status")
+        let result = try f.call("query_metric", #"{"metric":"cpuBusy","from":"-1h"}"#)
         #expect(result.isError)
         #expect(result.summary.contains("no data yet"))
+    }
+
+    @Test func currentStatusWorksWithoutADatabase() throws {
+        let f = try MCPFixture(seed: false)
+        var writer = try LiveStateWriter(url: f.paths.liveState)
+        writer.write(
+            LiveSnapshot(
+                timestamp: now, cpuBusy: 0.5, memUsed: 1, memTotal: 2, swapUsed: 0, diskFree: 0, diskCapacity: 0,
+                pressure: 1, thermal: 0, limitFlags: 0, activeAgents: 2, idleAgents: 1))
+        let item = FlaggedItem(
+            item: LeftoverItem(
+                key: "default/container/c", engine: "default", kind: .container, name: "c", containerIDs: ["id"],
+                sessionId: nil, lifetime: nil, cleanup: ["docker rm -f 'id'"]),
+            startedAt: now - 100, reason: "done", memoryBytes: 2_000_000_000, firstFlagged: now)
+        try LeftoverState(updated: now, items: [item]).save(to: f.paths.leftovers)
+
+        let result = try f.call("current_status")
+        #expect(!result.isError)
+        #expect(result.summary == "mem 50% · swap 0.0 GB · cpu 50% · pressure normal · 3 agents running · 1 leftover (2.0 GB)")
+        #expect(result.body["live"]?["cpuBusy"] == .double(0.5))
+        #expect(result.body["leftovers"]?["count"] == .int(1))
+        #expect(result.body["note"]?.stringValue?.contains("no recorded history") == true)
+        for key in ["todayLimitSeconds", "topGroups", "topProcesses", "agentRuns"] {
+            #expect(result.body[key] == nil, "\(key) needs the database")
+        }
     }
 
     @Test func queryMetricAutoResolution() throws {

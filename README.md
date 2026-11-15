@@ -230,7 +230,9 @@ Tools:
 
 - `current_status`: live CPU, memory, swap and pressure; today's time at a limit;
   the busiest workload groups and processes; running agent sessions; and
-  leftover containers with their cleanup commands.
+  leftover containers with their cleanup commands. Before the recorder has written
+  any history, it still returns the live values and leftovers, with a note that
+  the rest is left out.
 - `query_metric`: `metric` (`cpuBusy`, `load1`, `memUsed`, `memApp`,
   `memCompressed`, `swapUsed`, `memDemand`, `ssdWrite`, `diskFree`,
   `activeAgents`), `from`, optional `to` (default now) and `resolution`
@@ -328,8 +330,10 @@ The PDF is US Letter, rendered natively, with wording from deterministic rules
 
 - `headroom status` shows recorder health, the machine, days recorded, coverage
   of awake time and gaps, database size, the recorder's own average CPU and
-  peak memory over the last 24 h, whether agent hooks are installed, and the
-  Docker engines checked for leftovers.
+  peak memory over the last 24 h, which agent hook events are installed
+  (`agent hooks: SessionStart, PreToolUse`, with a hint to run
+  `headroom install --agents` when the advice hook is missing), and the Docker
+  engines checked for leftovers (`docker no engines found` when a check found none).
 - `headroom tag "<note>"` adds a timestamped note that appears as a marker on the
   report charts. Use `--` first if the text starts with dashes.
 - `headroom top` is the live terminal view shown above (also the default when you

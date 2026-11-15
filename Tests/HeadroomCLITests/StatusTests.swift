@@ -88,6 +88,31 @@ private final class Fixture {
         #expect(errors.count == 1 && errors[0].hasPrefix("database unreadable: "))
     }
 
+    @Test func noEnginesAfterAPass() throws {
+        let f = try Fixture()
+        try LeftoverState(updated: now.timeIntervalSince1970 - 120).save(to: f.paths.leftovers)
+        let out = try f.render()
+        #expect(out.contains("docker no engines found · last checked 2m ago"))
+        #expect(!out.contains("not checked yet"))
+    }
+
+    @Test func agentHookEventsAreListed() throws {
+        let f = try Fixture()
+        #expect(try f.render().contains("agent hooks: none · run headroom install --agents"))
+
+        let claude = f.home.appending(path: ".claude")
+        try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+        let session = #"{"hooks":[{"type":"command","command":"/b/headroom agent-hook claude"}]}"#
+        let pretool = #"{"matcher":"Bash","hooks":[{"type":"command","command":"/b/headroom agent-hook pretool claude"}]}"#
+        try Data(#"{"hooks":{"SessionStart":[\#(session)]}}"#.utf8).write(to: claude.appending(path: "settings.json"))
+        #expect(try f.render().contains("agent hooks: SessionStart · PreToolUse missing, run headroom install --agents"))
+
+        try Data(#"{"hooks":{"SessionStart":[\#(session)],"PreToolUse":[\#(pretool)]}}"#.utf8)
+            .write(to: claude.appending(path: "settings.json"))
+        let out = try f.render()
+        #expect(out.hasSuffix("agent hooks: SessionStart, PreToolUse"))
+    }
+
     @Test func statusShowsEngines() throws {
         let f = try Fixture()
         #expect(try f.render().contains("docker not checked yet"))

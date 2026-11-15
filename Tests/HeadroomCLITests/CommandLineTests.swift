@@ -93,7 +93,7 @@ private func tempDir() throws -> URL {
         let home = try tempDir()
         defer { try? FileManager.default.removeItem(at: home) }
         try FileManager.default.createDirectory(at: home.appending(path: ".claude"), withIntermediateDirectories: true)
-        try "{\"hooks\": \"headroom agent-hook claude\"}".write(
+        try #"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/b/headroom agent-hook claude"}]}]}}"#.write(
             to: home.appending(path: ".claude/settings.json"), atomically: true, encoding: .utf8)
 
         let out = try Status.render(queries: Queries(db: db), paths: paths, machineId: id, now: now, home: home)
@@ -104,12 +104,12 @@ private func tempDir() throws -> URL {
         #expect(out.contains("coverage 99.0% of awake time · gaps 0"))
         #expect(out.contains("database "))
         #expect(out.contains("headroomd CPU 0.1% · memory 8.0 MB"))
-        #expect(out.contains("agent hooks installed"))
+        #expect(out.contains("agent hooks: SessionStart · PreToolUse missing, run headroom install --agents"))
 
         try db.exec("UPDATE meta SET value='1' WHERE key='heartbeat'")
         let stale = try Status.render(queries: Queries(db: db), paths: paths, machineId: id, now: now, home: dir)
         #expect(stale.hasPrefix("not recording ○"))
-        #expect(stale.contains("agent hooks not installed"))
+        #expect(stale.contains("agent hooks: none · run headroom install --agents"))
     }
 
     @Test func parseLeftoversAndKeep() throws {

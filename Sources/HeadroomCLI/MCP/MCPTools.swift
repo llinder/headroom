@@ -178,7 +178,7 @@ enum MCPTools {
         let clock = Clock(calendar: calendar)
         switch name {
         case "current_status":
-            return run(paths) { q, id throws(DatabaseError) in try currentStatus(q, id, paths: paths, now: now, clock: clock) }
+            return currentStatus(paths: paths, now: now, clock: clock)
         case "query_metric":
             let request = try metricRequest(arguments, now: now, calendar: calendar)
             return run(paths) { q, id throws(DatabaseError) in try queryMetric(q, id, request, clock: clock) }
@@ -245,25 +245,28 @@ enum MCPTools {
     private static func run(
         _ paths: Paths, _ body: (Queries, String) throws(DatabaseError) -> (summary: String, json: String)
     ) -> (text: String, isError: Bool) {
-        guard FileManager.default.fileExists(atPath: paths.database.path) else { return (noData, true) }
         do {
-            let queries = Queries(db: try Database(path: paths.database.path, readOnly: true))
-            let known = try queries.machines().map(\.machineId)
-            let current = MachineInfo.current().machineId
-            let id: String
-            if known.contains(current) {
-                id = current
-            } else if let recent = try queries.mostRecentMachineId() {
-                id = recent
-            } else {
-                return (noData, true)
-            }
+            guard let (queries, id) = try open(paths) else { return (noData, true) }
             let output = try body(queries, id)
             return (output.summary + "\n" + output.json, false)
         } catch {
-            switch error {
-            case let .open(message), let .sqlite(_, message): return ("database unreadable: \(message)", true)
-            }
+            return (unreadable(error), true)
+        }
+    }
+
+    /// Nil when there is no database yet or it holds no machine.
+    private static func open(_ paths: Paths) throws(DatabaseError) -> (Queries, String)? {
+        guard FileManager.default.fileExists(atPath: paths.database.path) else { return nil }
+        let queries = Queries(db: try Database(path: paths.database.path, readOnly: true))
+        let known = try queries.machines().map(\.machineId)
+        let current = MachineInfo.current().machineId
+        if known.contains(current) { return (queries, current) }
+        return try queries.mostRecentMachineId().map { (queries, $0) }
+    }
+
+    private static func unreadable(_ error: DatabaseError) -> String {
+        switch error {
+        case let .open(message), let .sqlite(_, message): "database unreadable: \(message)"
         }
     }
 
@@ -358,31 +361,47 @@ enum MCPTools {
         var items: [LeftoverOut]
     }
 
+    /// The database-backed fields are nil, and left out of the JSON, when the database can't be read; `note` says why.
     private struct StatusOut: Encodable {
         var live: LiveOut?
-        var todayLimitSeconds: [String: Double]
+        var todayLimitSeconds: [String: Double]?
         var groupsAsOf: String?
-        var topGroups: [GroupNow]
-        var topProcesses: ProcessesOut
-        var agentRuns: [LiveRun]
+        var topGroups: [GroupNow]?
+        var topProcesses: ProcessesOut?
+        var agentRuns: [LiveRun]?
         var leftovers: LeftoversNow
+        var note: String?
     }
 
-    private static func currentStatus(
-        _ q: Queries, _ id: String, paths: Paths, now: Double, clock: Clock
-    ) throws(DatabaseError) -> (summary: String, json: String) {
-        let snapshot = LiveStateReader.read(url: paths.liveState)
-        let live = snapshot.map { s in
-            LiveOut(
-                asOf: clock.iso(s.timestamp), ageSeconds: (now - s.timestamp).rounded(),
-                stale: !(now - s.timestamp <= StatusLineFormatter.staleAfter), cpuBusy: rounded(Double(s.cpuBusy), 3),
-                memUsedBytes: s.memUsed, memTotalBytes: s.memTotal, swapUsedBytes: s.swapUsed,
-                swapGrowthBytesPerMin: s.swapGrowthBytesPerMin, diskFreeBytes: s.diskFree,
-                diskCapacityBytes: s.diskCapacity, pressure: pressureName(Int(s.pressure)),
-                thermal: thermalName(Int(s.thermal)), limits: limitNames(LimitFlags(rawValue: s.limitFlags)),
-                activeAgents: s.activeAgents, idleAgents: s.idleAgents)
-        }
+    private struct Recorded {
+        var today: [String: Double]
+        var groupsAsOf: String?
+        var groups: [GroupNow]
+        var processes: ProcessesOut
+        var runs: [LiveRun]
+    }
 
+    /// Live state and leftovers come from files, so they are returned even before the recorder has written history.
+    private static func currentStatus(paths: Paths, now: Double, clock: Clock) -> (text: String, isError: Bool) {
+        let recorded: Recorded?
+        let note: String?
+        do {
+            if let (q, id) = try open(paths) {
+                recorded = try recordedStatus(q, id, now: now, clock: clock)
+                note = nil
+            } else {
+                recorded = nil
+                note = "no recorded history yet: today's limits, groups, processes and agent runs are left out"
+            }
+        } catch {
+            recorded = nil
+            note = unreadable(error) + "; today's limits, groups, processes and agent runs are left out"
+        }
+        let output = currentStatus(recorded, note: note, paths: paths, now: now, clock: clock)
+        return (output.summary + "\n" + output.json, false)
+    }
+
+    private static func recordedStatus(_ q: Queries, _ id: String, now: Double, clock: Clock) throws(DatabaseError) -> Recorded {
         let today = try q.todayLimitSeconds(machineId: id, now: Date(timeIntervalSince1970: now), calendar: clock.calendar)
         var groups: [GroupNow] = []
         let latest = try q.latestGroupSample(machineId: id)
@@ -403,6 +422,23 @@ enum MCPTools {
                 tool: r.tool, ageSeconds: max(0, now - r.started), cpuCores: rounded(r.cpuSeconds / 60, 2),
                 footprintBytes: r.peakFootprint, active: r.activeSeconds > 0, lastUsage: r.lastUsage.map(clock.iso))
         }
+        return Recorded(today: nonZero(today), groupsAsOf: latest.map(clock.iso), groups: groups, processes: processes, runs: runs)
+    }
+
+    private static func currentStatus(
+        _ recorded: Recorded?, note: String?, paths: Paths, now: Double, clock: Clock
+    ) -> (summary: String, json: String) {
+        let snapshot = LiveStateReader.read(url: paths.liveState)
+        let live = snapshot.map { s in
+            LiveOut(
+                asOf: clock.iso(s.timestamp), ageSeconds: (now - s.timestamp).rounded(),
+                stale: !(now - s.timestamp <= StatusLineFormatter.staleAfter), cpuBusy: rounded(Double(s.cpuBusy), 3),
+                memUsedBytes: s.memUsed, memTotalBytes: s.memTotal, swapUsedBytes: s.swapUsed,
+                swapGrowthBytesPerMin: s.swapGrowthBytesPerMin, diskFreeBytes: s.diskFree,
+                diskCapacityBytes: s.diskCapacity, pressure: pressureName(Int(s.pressure)),
+                thermal: thermalName(Int(s.thermal)), limits: limitNames(LimitFlags(rawValue: s.limitFlags)),
+                activeAgents: s.activeAgents, idleAgents: s.idleAgents)
+        }
 
         let sidecar = LeftoverState.load(from: paths.leftovers)
         let leftovers = LeftoversNow(
@@ -414,8 +450,8 @@ enum MCPTools {
             })
 
         let out = StatusOut(
-            live: live, todayLimitSeconds: nonZero(today), groupsAsOf: latest.map(clock.iso), topGroups: groups,
-            topProcesses: processes, agentRuns: runs, leftovers: leftovers)
+            live: live, todayLimitSeconds: recorded?.today, groupsAsOf: recorded?.groupsAsOf, topGroups: recorded?.groups,
+            topProcesses: recorded?.processes, agentRuns: recorded?.runs, leftovers: leftovers, note: note)
 
         var summary: String
         if let s = snapshot, let l = live, !l.stale {
@@ -423,7 +459,9 @@ enum MCPTools {
             let cpuPercent = TopRenderer.clampedInt((l.cpuBusy * 100).rounded(), upTo: 100)
             summary = "mem \(TopRenderer.clampedInt(memPercent.rounded()))% · swap \(gigabytes(Double(s.swapUsed))) GB"
             summary += " · cpu \(cpuPercent)%"
-            summary += " · pressure \(l.pressure) · \(runs.count) agent\(runs.count == 1 ? "" : "s") running"
+            // Without the database, the live counts stand in for the recorded runs.
+            let running = recorded?.runs.count ?? Int(s.activeAgents) + Int(s.idleAgents)
+            summary += " · pressure \(l.pressure) · \(running) agent\(running == 1 ? "" : "s") running"
         } else if let l = live {
             summary = "recorder not running: live state is \(TopRenderer.clampedInt(l.ageSeconds))s old"
         } else {
