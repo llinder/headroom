@@ -119,7 +119,9 @@ started a container.
 ## Abandoned containers
 
 Containers keep running after the work that started them is over, and hold memory
-nobody is using. The recorder checks every 5 minutes. It looks at Docker engines
+nobody is using. The recorder checks every 5 minutes while an agent session is
+running or memory pressure is raised, and once when it starts; otherwise it leaves
+the Docker VM alone, and the last result stays until the next check. It looks at Docker engines
 reachable through the contexts in `~/.docker/contexts`, `/var/run/docker.sock`
 and a `unix://` `DOCKER_HOST`. It groups running containers into items: a Kind
 cluster, a Compose project, a Testcontainers session, or a single container.

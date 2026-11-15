@@ -155,6 +155,7 @@ Paths are resolved through symlinks and deduplicated, keeping the first context 
 - The pass runs on its own serial background queue.
 - It has a 10 s overall deadline, at most 20 inspect or stats calls per pass, and 2 s per request.
 - Results return to the main actor. Sampling never waits.
+- A scheduled pass runs only while an agent run is live or memory pressure is not normal. The first pass after the recorder starts always runs.
 - `status` shows the engines found and when the last pass ran.
 - A refused connection or a missing socket clears that engine's items. A timeout keeps them for at most 3 passes.
 
@@ -281,3 +282,7 @@ Paths are resolved through symlinks and deduplicated, keeping the first context 
 - `claude mcp add --scope user headroom -- <exe> mcp`, and `claude mcp remove --scope user headroom`. `--scope` is `local`, `user` or `project`.
 - `codex mcp add headroom -- <exe> mcp`, and `codex mcp remove headroom`. Codex has no scope flag: its config is per user.
 - `mcp list` is used to detect an existing registration: the first field of a line must equal `headroom` (or `headroom:`), because a substring match would skip registration when another server's path contains the word.
+
+**Leftover pass and idle Docker VMs.**
+- Whether a 5-minute poll keeps an idle OrbStack or Docker Desktop VM awake was not measured.
+- The conservative fallback is in place instead: a scheduled pass runs only while an agent run is live or memory pressure is not normal, and the first pass after start always runs. With no agent running and normal pressure, the sidecar keeps the last pass's result, and `status` shows when that was.

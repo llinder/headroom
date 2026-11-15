@@ -58,6 +58,10 @@ final class Recorder {
     private var lastDrainWarning = -Double.infinity
     private var leftovers: LeftoverState
     private var leftoverPassRunning = false
+    private var leftoverPassStarted = false
+    // The latest sampled values the leftover gate reads; a tick that couldn't be sampled keeps the previous ones.
+    private var liveAgentRuns = 0
+    private var pressure = PressureLevel.normal
 
     init(paths: Paths) throws {
         try paths.ensureRoot()
@@ -188,6 +192,8 @@ final class Recorder {
             let result = pipeline.sample(
                 now: now, interval: elapsed, refreshSpace: tickCount % Self.spaceRefreshEvery == 0, thermal: level)
             sampled = result.tick
+            liveAgentRuns = result.agents.live.count
+            if let tick = result.tick { pressure = tick.memory.pressure }
             // The tracker has already forgotten these runs, so no later tick would report their end.
             if sampled == nil { store.recordRunsEnded(result.agents.ended, ts: now) }
         }
@@ -202,7 +208,11 @@ final class Recorder {
         if tickCount % Self.flushEvery == 0 { flushCycle(now: now) }
         if tickCount % Self.scanEvery == 0 { scanDiagnostics(now: now) }
         if tickCount % Self.pruneEvery == 0 { pruneThrottles(now: now) }
-        if tickCount % Self.leftoverEvery == Self.leftoverFirstTick { startLeftoverPass(now: now) }
+        if tickCount % Self.leftoverEvery == Self.leftoverFirstTick,
+            LeftoverMonitor.shouldPass(first: !leftoverPassStarted, liveAgentRuns: liveAgentRuns, pressure: pressure)
+        {
+            startLeftoverPass(now: now)
+        }
     }
 
     /// Docker calls can take seconds, so the pass runs off the main queue and sampling never waits for it. It reads
@@ -210,6 +220,7 @@ final class Recorder {
     private func startLeftoverPass(now: Double) {
         guard !leftoverPassRunning else { return }
         leftoverPassRunning = true
+        leftoverPassStarted = true
         let monitor = leftoverMonitor
         let previous = leftovers
         let paths = self.paths

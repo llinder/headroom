@@ -88,6 +88,14 @@ private func wallNow() -> Double { Date().timeIntervalSince1970 }
 @Suite struct LeftoverMonitorTests {
     private let day = 86_400.0
 
+    @Test func passRunsOnlyWhileAgentsOrPressureNeedIt() {
+        #expect(LeftoverMonitor.shouldPass(first: true, liveAgentRuns: 0, pressure: .normal), "the first pass always runs")
+        #expect(!LeftoverMonitor.shouldPass(first: false, liveAgentRuns: 0, pressure: .normal))
+        #expect(LeftoverMonitor.shouldPass(first: false, liveAgentRuns: 1, pressure: .normal))
+        #expect(LeftoverMonitor.shouldPass(first: false, liveAgentRuns: 0, pressure: .warn))
+        #expect(LeftoverMonitor.shouldPass(first: false, liveAgentRuns: 0, pressure: .critical))
+    }
+
     @Test func flagsUnownedAfter24hAndEmitsEvent() throws {
         let now = wallNow()
         let old = Box(id: hexID(1), name: "old-one", startedAt: now - 25 * 3600, usage: 300 << 20, inactive: 100 << 20)

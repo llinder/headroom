@@ -183,6 +183,13 @@ public struct LeftoverMonitor: Sendable {
         return (state, events(previous: previous.items, current: items))
     }
 
+    /// Whether a scheduled pass should run. Each pass wakes every engine, and an idle Docker VM may be kept awake by
+    /// that; nothing new can be owned while no agent runs, and leftovers matter most once memory is short. The
+    /// first pass after start always runs, so the sidecar reflects this recorder's engines.
+    public static func shouldPass(first: Bool, liveAgentRuns: Int, pressure: PressureLevel) -> Bool {
+        first || liveAgentRuns > 0 || pressure != .normal
+    }
+
     private func list(_ engine: DockerEngine) -> Result<[DockerContainer], DockerError> {
         let data: Data
         do {
