@@ -121,6 +121,7 @@ final class Recorder {
         if !power.start() { log.error("sleep/wake notifications unavailable; asleep time will not be recorded") }
         self.power = power
 
+        pruneThrottles(now: now)
         pipeline.discard()
         _ = readSelfUsage()
         lastSample = clock.now
@@ -285,15 +286,7 @@ final class Recorder {
 
     /// The advice hook leaves one throttle file per agent session, so without this they would pile up forever.
     private func pruneThrottles(now: Double) {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: pretool.path) else { return }
-        for name in names {
-            let path = pretool.appending(path: name).path
-            var st = stat()
-            guard lstat(path, &st) == 0, st.st_mode & S_IFMT == S_IFREG,
-                now - Double(st.st_mtimespec.tv_sec) > Self.throttleMaxAge
-            else { continue }
-            unlink(path)
-        }
+        _ = FilePrune.pruneOldFiles(in: pretool, now: now, maxAge: Self.throttleMaxAge)
     }
 
     private func writeLiveState(_ tick: Tick) {
