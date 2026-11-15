@@ -163,9 +163,12 @@ enum TopRenderer {
 
     /// Kind, name, reason, memory and age. The name is the only column that gives way, since `fit` trims from the right.
     private static func leftoversPane(_ s: TopState, width: Int) -> [String] {
+        // Fixed columns are 1 + kind 15 + memory 9 + age 7; the reason goes first when the name would drop under 8.
+        let withReason = width - 48 >= 8
+        let nameWidth = withReason ? width - 48 : max(8, width - 32)
         let rows = s.leftovers.map { flagged -> String in
-            " " + pad(flagged.item.kind.rawValue, 15) + pad(flagged.item.name, max(0, width - 48))
-                + pad(flagged.reason, 16) + rpad(flagged.memoryBytes.map(memoryText) ?? "unknown", 9)
+            " " + pad(flagged.item.kind.rawValue, 15) + pad(flagged.item.name, nameWidth)
+                + (withReason ? pad(flagged.reason, 16) : "") + rpad(flagged.memoryBytes.map(memoryText) ?? "unknown", 9)
                 + rpad(age(s.now - flagged.startedAt), 7)
         }
         return [ruled("leftovers (\(s.leftovers.count))", tail: "memory ── age ──", width: width)] + rows

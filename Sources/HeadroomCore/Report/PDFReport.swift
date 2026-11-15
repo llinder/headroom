@@ -218,8 +218,12 @@ public enum PDFReport {
             c.text(
                 "Agents were advised to narrow work \(Wording.plural(a.agentWarnings, "time")) while memory was critical.", body, after: 2)
         }
-        if a.leftoverPeakGB > 0 {
+        // Under 0.1 GB the figure would round to "0.0 GB", so it is given in whole megabytes; under 1 MB there is nothing to say.
+        let peakMB = (a.leftoverPeakGB * 1000).rounded()
+        if a.leftoverPeakGB >= 0.1 {
             c.text("Abandoned containers held up to \(Wording.decimal(a.leftoverPeakGB, places: 1)) GB at their peak.", body, after: 2)
+        } else if peakMB >= 1 {
+            c.text("Abandoned containers held up to \(Wording.decimal(peakMB, places: 0)) MB at their peak.", body, after: 2)
         }
         c.space(4)
 

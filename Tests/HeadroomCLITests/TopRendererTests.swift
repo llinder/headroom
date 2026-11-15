@@ -79,7 +79,9 @@ private func leftover(_ name: String, kind: LeftoverKind = .compose, memory: UIn
             }
         }
         let wide = TopRenderer.render(s, width: 80, height: 40).first { $0.contains("compose") }
-        #expect(wide?.contains("2.4 GB") == true && wide?.hasSuffix("2h5m") == true)
+        #expect(wide?.contains("no owner") == true && wide?.contains("2.4 GB") == true && wide?.hasSuffix("2h5m") == true)
+        let narrow = TopRenderer.render(s, width: 40, height: 40).first { $0.contains("compose") }
+        #expect(narrow?.contains("2.4 GB") == true && narrow?.hasSuffix("2h5m") == true)
     }
 
     @Test func headerLine() {

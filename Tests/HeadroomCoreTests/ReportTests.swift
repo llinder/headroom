@@ -303,7 +303,31 @@ private func fullText(_ doc: PDFDocument) -> String {
         let from = Date(timeIntervalSince1970: Double(at(5, 11)))
         let to = Date(timeIntervalSince1970: Double(at(5, 12)))
         #expect(try queries.leftoverPeakBytes(machineId: id, from: from, to: to) == 1_500_000_000)
+        let other = oldMachine.machineId
+        let payload = #"{"kind":"compose","ref":"zz","bytes":"1","totalBytes":"9000000000"}"#
+        try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 12)), 'leftover', '\(payload)')")
+        try f.exec("INSERT INTO events VALUES('\(other)', \(at(5, 11)), 'leftover', '\(payload)')")
+        try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 12)), 'agent_warning', '{}')")
+        try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 11)), 'agent_warning', '{}')")
+        try f.exec("INSERT INTO events VALUES('\(other)', \(at(5, 11)), 'agent_warning', '{}')")
+        #expect(try queries.leftoverPeakBytes(machineId: id, from: from, to: to) == 1_500_000_000)
+        #expect(try queries.agentWarningCount(machineId: id, from: from, to: to) == 1)
         #expect(try queries.leftoverPeakBytes(machineId: id, from: to.addingTimeInterval(86_400), to: to.addingTimeInterval(172_800)) == nil)
+    }
+
+    @Test func smallLeftoverPeakReadsInMegabytes() throws {
+        let f = try ReportFixture()
+        let id = thisMachine.machineId
+        func peakLine(_ total: Int) throws -> String {
+            try f.exec("DELETE FROM events WHERE kind='leftover'")
+            try f.exec(#"INSERT INTO events VALUES('\#(id)', \#(at(5, 9)), 'leftover', '{"kind":"kind","ref":"aa","bytes":"1","totalBytes":"\#(total)"}')"#)
+            let doc = try f.render(try f.model(baseline: nil))
+            return text(doc.page(at: doc.pageCount - 1))
+        }
+        let small = try peakLine(40_000_000)
+        #expect(small.contains("Abandoned containers held up to 40 MB at their peak."))
+        #expect(!small.contains("0.0 GB"))
+        #expect(!(try peakLine(100_000)).contains("Abandoned containers"))
     }
 
     @Test func privacyNoContainerNamesInPDF() throws {
