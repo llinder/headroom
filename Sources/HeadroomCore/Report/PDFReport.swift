@@ -214,10 +214,7 @@ public enum PDFReport {
             "Thermal slowdowns (serious or worse): \(a.thermalSlowdowns). Apps closed by macOS to free memory: \(a.events["jetsam"] ?? 0). "
                 + "Apps that stopped responding: \(a.events["hang"] ?? 0).", body)
 
-        if a.agentWarnings > 0 {
-            c.text(
-                "Agents were advised to narrow work \(Wording.plural(a.agentWarnings, "time")) while memory was critical.", body, after: 2)
-        }
+        if let advice = Appendix.adviceSentence(a.agentWarnings) { c.text(advice, body, after: 2) }
         // Under 0.1 GB the figure would round to "0.0 GB", so it is given in whole megabytes; under 1 MB there is nothing to say.
         let peakMB = (a.leftoverPeakGB * 1000).rounded()
         if a.leftoverPeakGB >= 0.1 {

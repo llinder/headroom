@@ -1,14 +1,20 @@
 import Foundation
 
+/// What made the advice hook speak. The raw values are stored in `agent_warning` payloads.
+public enum AdviceTrigger: String, Codable, Sendable, CaseIterable {
+    case critical, swapGrowing, leftovers
+}
+
 public enum SpoolRecord: Codable, Sendable, Equatable {
     case tag(ts: Double, text: String)
     case command(ts: Double, exe: String, seconds: Double)
     case agentSession(ts: Double, tool: String, sessionId: String, model: String?, rootPid: Int32, rootStart: UInt64)
-    case agentWarning(ts: Double)
+    /// `trigger` is nil in records written before it was added.
+    case agentWarning(ts: Double, trigger: AdviceTrigger?)
     case containerIntent(ts: Double, rootPid: Int32, rootStart: UInt64)
 
     private enum CodingKeys: String, CodingKey {
-        case type, ts, text, exe, seconds, tool, sessionId, model, rootPid, rootStart
+        case type, ts, text, exe, seconds, tool, sessionId, model, rootPid, rootStart, trigger
     }
 
     private enum Kind: String, Codable {
@@ -34,7 +40,10 @@ public enum SpoolRecord: Codable, Sendable, Equatable {
                 rootPid: try c.decode(Int32.self, forKey: .rootPid),
                 rootStart: try c.decode(UInt64.self, forKey: .rootStart))
         case .agentWarning:
-            self = .agentWarning(ts: try c.decode(Double.self, forKey: .ts))
+            // An unknown trigger from a newer hook still counts as a warning.
+            self = .agentWarning(
+                ts: try c.decode(Double.self, forKey: .ts),
+                trigger: try c.decodeIfPresent(String.self, forKey: .trigger).flatMap(AdviceTrigger.init(rawValue:)))
         case .containerIntent:
             self = .containerIntent(
                 ts: try c.decode(Double.self, forKey: .ts),
@@ -63,9 +72,10 @@ public enum SpoolRecord: Codable, Sendable, Equatable {
             try c.encodeIfPresent(model, forKey: .model)
             try c.encode(rootPid, forKey: .rootPid)
             try c.encode(rootStart, forKey: .rootStart)
-        case let .agentWarning(ts):
+        case let .agentWarning(ts, trigger):
             try c.encode(Kind.agentWarning, forKey: .type)
             try c.encode(ts, forKey: .ts)
+            try c.encodeIfPresent(trigger?.rawValue, forKey: .trigger)
         case let .containerIntent(ts, rootPid, rootStart):
             try c.encode(Kind.containerIntent, forKey: .type)
             try c.encode(ts, forKey: .ts)

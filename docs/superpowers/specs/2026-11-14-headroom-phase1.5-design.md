@@ -102,7 +102,7 @@ npm test, npm run build, npx vitest, pnpm test, pytest, bazel, bazelisk
 
 **Container ownership marker.** When the command contains a container-kind segment (`docker run`, `docker compose up`, `kind create cluster`, `docker buildx`), the hook appends `SpoolRecord.containerIntent(ts, rootPid, rootStart)`. It does this **whether or not advice was given**, rate-limited to once a minute per throttle key. No command text is stored. This is what leftover ownership uses (section 3).
 
-**Record.** Advice appends `SpoolRecord.agentWarning(ts)`, which becomes an `agent_warning` event with an empty payload.
+**Record.** Advice appends `SpoolRecord.agentWarning(ts, trigger)`, which becomes an `agent_warning` event with the payload `{"trigger":"critical"}`, `{"trigger":"swapGrowing"}` or `{"trigger":"leftovers"}`. Records and rows written before the trigger was added have none and an empty payload; they count as `critical`, the only trigger that existed then. There is no schema change.
 
 **Budget.** Single-digit milliseconds, and always exit 0. Gated in `make bench`.
 
@@ -215,7 +215,7 @@ Paths are resolved through symlinks and deduplicated, keeping the first context 
 - **`headroom leftovers` (with `--json`):** lists everything with copy-pasteable commands. A `--kept` flag shows kept and ignored items too, so you can see why something isn't flagged.
 - **`headroom keep` / `unkeep` / `keeps`:** manage the keep list.
 - **Report appendix:** two lines, with no names:
-  - "Agents were advised to narrow work N times while memory was critical."
+  - "Agents were advised to narrow work N times: A while memory was critical, B while swap was growing, C because abandoned containers held memory." Only the non-zero parts are listed. With one part the sentence has no breakdown, for example "Agents were advised to narrow work 2 times while swap was growing."
   - "Abandoned containers held up to X GB at their peak." This is the maximum `totalBytes` from leftover events in the range.
 
 ### Config additions (`config.json`, all optional with defaults)

@@ -133,10 +133,15 @@ public struct Queries {
         }.compactMap { $0 }
     }
 
-    public func agentWarningCount(machineId: String, from: Date, to: Date) throws(DatabaseError) -> Int {
-        try rows("SELECT COUNT(*) FROM events WHERE machine_id=? AND kind='agent_warning' AND ts>=? AND ts<?") { s in
-            bindRange(s, machineId, from, to)
-        } read: { Int($0.int64(0)) }.first ?? 0
+    /// Warnings per trigger. Rows written before the trigger was recorded only ever fired on critical pressure.
+    public func agentWarningCounts(machineId: String, from: Date, to: Date) throws(DatabaseError) -> [String: Int] {
+        let counts = try rows(
+            """
+            SELECT COALESCE(json_extract(payload, '$.trigger'), 'critical'), COUNT(*) FROM events
+            WHERE machine_id=? AND kind='agent_warning' AND ts>=? AND ts<? GROUP BY 1
+            """
+        ) { s in bindRange(s, machineId, from, to) } read: { ($0.string(0), Int($0.int64(1))) }
+        return Dictionary(counts, uniquingKeysWith: +)
     }
 
     /// The running total after each leftover event, so its maximum is the peak. Unparseable payloads are skipped.

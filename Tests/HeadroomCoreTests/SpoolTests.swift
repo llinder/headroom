@@ -31,7 +31,8 @@ private func makeSpool() throws -> (Spool, URL) {
         let (spool, dir) = try makeSpool()
         defer { try? FileManager.default.removeItem(at: dir) }
         let records: [SpoolRecord] = [
-            .agentWarning(ts: 5),
+            .agentWarning(ts: 5, trigger: .swapGrowing),
+            .agentWarning(ts: 5.5, trigger: nil),
             .containerIntent(ts: 6, rootPid: 77, rootStart: 1_700_000_000_000_000),
         ]
         for r in records { #expect(spool.append(r)) }
@@ -39,6 +40,14 @@ private func makeSpool() throws -> (Spool, URL) {
         let result = spool.drain()
         #expect(result.records == records)
         #expect(result.malformed == 0)
+    }
+
+    @Test func agentWarningWithoutTriggerStillDecodes() throws {
+        let decoded = try JSONDecoder().decode(SpoolRecord.self, from: Data(#"{"ts":5,"type":"agentWarning"}"#.utf8))
+        #expect(decoded == .agentWarning(ts: 5, trigger: nil))
+        let leftovers = try JSONDecoder().decode(
+            SpoolRecord.self, from: Data(#"{"trigger":"leftovers","ts":5,"type":"agentWarning"}"#.utf8))
+        #expect(leftovers == .agentWarning(ts: 5, trigger: .leftovers))
     }
 
     @Test func phase1RecorderSkipsNewRecords() throws {

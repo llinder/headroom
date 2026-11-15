@@ -2,8 +2,6 @@ import Darwin
 import Foundation
 import HeadroomCore
 
-enum AdviceTrigger: Equatable { case critical, swapGrowing, leftovers }
-
 enum CommandKind { case go, container, build, js }
 
 enum PreToolAdvice {

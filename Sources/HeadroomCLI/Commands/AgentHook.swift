@@ -113,7 +113,7 @@ public enum AgentHook {
             return (nil, appended)
         }
         throttle.touch(key: key, now: now)
-        let warning = SpoolRecord.agentWarning(ts: now)
+        let warning = SpoolRecord.agentWarning(ts: now, trigger: trigger)
         if spool.append(warning) { appended.append(warning) }
         return (String(decoding: json, as: UTF8.self), appended)
     }

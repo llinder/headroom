@@ -358,10 +358,10 @@ private let releaseBinary: URL? = {
             bashInput("go test ./..."), snapshot: pretoolSnapshot(age: -59, pressure: 4), paths: paths,
             now: Self.pretoolNow + 60)
         #expect(first.stdout != nil)
-        #expect(first.spool == [.agentWarning(ts: Self.pretoolNow)])
+        #expect(first.spool == [.agentWarning(ts: Self.pretoolNow, trigger: .critical)])
         #expect(second.stdout == nil)
         #expect(second.spool.isEmpty)
-        #expect(spooled(Spool(url: paths.spool)) == [.agentWarning(ts: Self.pretoolNow)])
+        #expect(spooled(Spool(url: paths.spool)) == [.agentWarning(ts: Self.pretoolNow, trigger: .critical)])
         let later = pretool(
             bashInput("go test ./..."), snapshot: pretoolSnapshot(age: -299, pressure: 4), paths: paths,
             now: Self.pretoolNow + 300)
@@ -378,6 +378,21 @@ private let releaseBinary: URL? = {
         #expect(pretool(bashInput("make"), snapshot: snapshot, paths: paths).stdout != nil)
         #expect(pretool(bashInput("make", agent: "a1"), snapshot: snapshot, paths: paths).stdout == nil)
         #expect(Set(throttleFiles(paths)) == ["s1.a1", "s1.a2", "s1"])
+    }
+
+    @Test func warningRecordsTheTriggerItFiredOn() throws {
+        let dir = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let paths = Paths(root: dir)
+        var swap = pretoolSnapshot()
+        swap.swapGrowthBytesPerMin = 300_000_000
+        var leftovers = pretoolSnapshot()
+        leftovers.leftoverCount = 1
+        leftovers.leftoverBytes = 2_000_000_000
+        #expect(pretool(bashInput("ls", session: "a"), snapshot: swap, paths: paths).spool
+            == [.agentWarning(ts: Self.pretoolNow, trigger: .swapGrowing)])
+        #expect(pretool(bashInput("ls", session: "b"), snapshot: leftovers, paths: paths).spool
+            == [.agentWarning(ts: Self.pretoolNow, trigger: .leftovers)])
     }
 
     @Test func malformedStdinIsSilent() throws {

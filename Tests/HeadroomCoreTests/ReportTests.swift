@@ -294,9 +294,10 @@ private func fullText(_ doc: PDFDocument) -> String {
         try f.exec(#"INSERT INTO events VALUES('\#(id)', \#(at(5, 11)), 'leftover_cleared', '{"kind":"kind","ref":"bb","bytes":"1000000000","totalBytes":"1500000000"}')"#)
         try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 12)), 'leftover', 'not json')")
         let m = try f.model(baseline: nil)
-        #expect(m.appendix.agentWarnings == 2)
+        #expect(m.appendix.agentWarnings == ["critical": 2])
         let loud = try appendixText()
         #expect(loud.contains("Agents were advised to narrow work 2 times while memory was critical."))
+        #expect(!loud.contains("times:"))
         #expect(loud.contains("Abandoned containers held up to 2.5 GB at their peak."))
 
         let queries = Queries(db: f.db)
@@ -311,8 +312,39 @@ private func fullText(_ doc: PDFDocument) -> String {
         try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 11)), 'agent_warning', '{}')")
         try f.exec("INSERT INTO events VALUES('\(other)', \(at(5, 11)), 'agent_warning', '{}')")
         #expect(try queries.leftoverPeakBytes(machineId: id, from: from, to: to) == 1_500_000_000)
-        #expect(try queries.agentWarningCount(machineId: id, from: from, to: to) == 1)
+        #expect(try queries.agentWarningCounts(machineId: id, from: from, to: to) == ["critical": 1])
         #expect(try queries.leftoverPeakBytes(machineId: id, from: to.addingTimeInterval(86_400), to: to.addingTimeInterval(172_800)) == nil)
+    }
+
+    @Test func agentWarningCountsByTrigger() throws {
+        let f = try ReportFixture()
+        let id = thisMachine.machineId
+        let rows = [
+            "{}", #"{"trigger":"critical"}"#, #"{"trigger":"swapGrowing"}"#, #"{"trigger":"swapGrowing"}"#,
+            #"{"trigger":"swapGrowing"}"#, #"{"trigger":"leftovers"}"#,
+        ]
+        for (i, payload) in rows.enumerated() {
+            try f.exec("INSERT INTO events VALUES('\(id)', \(at(4, 9) + Int64(i)), 'agent_warning', '\(payload)')")
+        }
+        let from = Date(timeIntervalSince1970: Double(at(4, 0)))
+        let to = Date(timeIntervalSince1970: Double(at(5, 0)))
+        #expect(try Queries(db: f.db).agentWarningCounts(machineId: id, from: from, to: to)
+            == ["critical": 2, "swapGrowing": 3, "leftovers": 1])
+
+        let doc = try f.render(try f.model(baseline: nil))
+        #expect(text(doc.page(at: doc.pageCount - 1)).contains(
+            "Agents were advised to narrow work 6 times: 2 while memory was critical, 3 while swap was growing, 1 because abandoned containers held memory."))
+    }
+
+    @Test func adviceSentenceListsOnlyNonZeroParts() {
+        #expect(Appendix.adviceSentence([:]) == nil)
+        #expect(Appendix.adviceSentence(["critical": 0]) == nil)
+        #expect(Appendix.adviceSentence(["swapGrowing": 1])
+            == "Agents were advised to narrow work 1 time while swap was growing.")
+        #expect(Appendix.adviceSentence(["leftovers": 2])
+            == "Agents were advised to narrow work 2 times because abandoned containers held memory.")
+        #expect(Appendix.adviceSentence(["critical": 1, "leftovers": 1, "swapGrowing": 0])
+            == "Agents were advised to narrow work 2 times: 1 while memory was critical, 1 because abandoned containers held memory.")
     }
 
     @Test func smallLeftoverPeakReadsInMegabytes() throws {
