@@ -27,6 +27,30 @@ private func makeSpool() throws -> (Spool, URL) {
         #expect(spool.drain().records.isEmpty)
     }
 
+    @Test func newRecordsRoundTrip() throws {
+        let (spool, dir) = try makeSpool()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let records: [SpoolRecord] = [
+            .agentWarning(ts: 5),
+            .containerIntent(ts: 6, rootPid: 77, rootStart: 1_700_000_000_000_000),
+        ]
+        for r in records { #expect(spool.append(r)) }
+        _ = spool.drain()
+        let result = spool.drain()
+        #expect(result.records == records)
+        #expect(result.malformed == 0)
+    }
+
+    @Test func phase1RecorderSkipsNewRecords() throws {
+        let (spool, dir) = try makeSpool()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try (#"{"type":"futureRecord","ts":1}"# + "\n").write(to: spool.url, atomically: true, encoding: .utf8)
+        _ = spool.drain()
+        let result = spool.drain()
+        #expect(result.records.isEmpty)
+        #expect(result.malformed == 1)
+    }
+
     @Test func malformedLinesSkipped() throws {
         let (spool, dir) = try makeSpool()
         defer { try? FileManager.default.removeItem(at: dir) }

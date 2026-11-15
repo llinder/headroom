@@ -55,6 +55,19 @@ private final class Fixture {
 }
 
 @Suite struct QueriesTests {
+    @Test func containerIntentsInRange() throws {
+        let f = try Fixture()
+        try f.db.exec("""
+            INSERT INTO events VALUES('m1', \(at(0, 3)), 'container_intent', '{"rootPid":"30","rootStart":"3000"}');
+            INSERT INTO events VALUES('m1', \(at(0, 1)), 'container_intent', '{"rootPid":"10","rootStart":"1000"}');
+            INSERT INTO events VALUES('m1', \(at(0, 2)), 'container_intent', '{"rootPid":"bad"}');
+            INSERT INTO events VALUES('m1', \(at(0, 5)), 'container_intent', '{"rootPid":"50","rootStart":"5000"}');
+            """)
+        let got = try Queries(db: f.db).containerIntents(machineId: "m1", from: Double(at(0, 0)), to: Double(at(0, 4)))
+        #expect(got.map(\.ts) == [Double(at(0, 1)), Double(at(0, 3))])
+        #expect(got.map(\.root) == [ProcessKey(pid: 10, start: 1000), ProcessKey(pid: 30, start: 3000)])
+    }
+
     @Test func queriesDailyMetric() throws {
         let f = try Fixture()
         for (hour, max) in [(1, 0.5), (2, 0.9), (3, 0.7)] {

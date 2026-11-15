@@ -4,13 +4,15 @@ public enum SpoolRecord: Codable, Sendable, Equatable {
     case tag(ts: Double, text: String)
     case command(ts: Double, exe: String, seconds: Double)
     case agentSession(ts: Double, tool: String, sessionId: String, model: String?, rootPid: Int32, rootStart: UInt64)
+    case agentWarning(ts: Double)
+    case containerIntent(ts: Double, rootPid: Int32, rootStart: UInt64)
 
     private enum CodingKeys: String, CodingKey {
         case type, ts, text, exe, seconds, tool, sessionId, model, rootPid, rootStart
     }
 
     private enum Kind: String, Codable {
-        case tag, command, agentSession
+        case tag, command, agentSession, agentWarning, containerIntent
     }
 
     public init(from decoder: any Decoder) throws {
@@ -29,6 +31,13 @@ public enum SpoolRecord: Codable, Sendable, Equatable {
                 tool: try c.decode(String.self, forKey: .tool),
                 sessionId: try c.decode(String.self, forKey: .sessionId),
                 model: try c.decodeIfPresent(String.self, forKey: .model),
+                rootPid: try c.decode(Int32.self, forKey: .rootPid),
+                rootStart: try c.decode(UInt64.self, forKey: .rootStart))
+        case .agentWarning:
+            self = .agentWarning(ts: try c.decode(Double.self, forKey: .ts))
+        case .containerIntent:
+            self = .containerIntent(
+                ts: try c.decode(Double.self, forKey: .ts),
                 rootPid: try c.decode(Int32.self, forKey: .rootPid),
                 rootStart: try c.decode(UInt64.self, forKey: .rootStart))
         }
@@ -52,6 +61,14 @@ public enum SpoolRecord: Codable, Sendable, Equatable {
             try c.encode(tool, forKey: .tool)
             try c.encode(sessionId, forKey: .sessionId)
             try c.encodeIfPresent(model, forKey: .model)
+            try c.encode(rootPid, forKey: .rootPid)
+            try c.encode(rootStart, forKey: .rootStart)
+        case let .agentWarning(ts):
+            try c.encode(Kind.agentWarning, forKey: .type)
+            try c.encode(ts, forKey: .ts)
+        case let .containerIntent(ts, rootPid, rootStart):
+            try c.encode(Kind.containerIntent, forKey: .type)
+            try c.encode(ts, forKey: .ts)
             try c.encode(rootPid, forKey: .rootPid)
             try c.encode(rootStart, forKey: .rootStart)
         }

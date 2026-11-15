@@ -85,6 +85,23 @@ public struct Queries {
         }.compactMap { $0 }
     }
 
+    /// Rows whose payload lacks a parseable root are skipped, like `tags`.
+    public func containerIntents(machineId: String, from: Double, to: Double) throws(DatabaseError) -> [(ts: Double, root: ProcessKey)] {
+        try rows(
+            "SELECT ts, payload FROM events WHERE machine_id=? AND kind='container_intent' AND ts>=? AND ts<? ORDER BY ts"
+        ) { s in
+            s.bind(1, machineId)
+            s.bind(2, Int64(from))
+            s.bind(3, Int64(to))
+        } read: { s -> (ts: Double, root: ProcessKey)? in
+            guard let payload = try? JSONDecoder().decode([String: String].self, from: Data(s.string(1).utf8)),
+                let pid = payload["rootPid"].flatMap({ Int32($0) }),
+                let start = payload["rootStart"].flatMap({ UInt64($0) })
+            else { return nil }
+            return (s.double(0), ProcessKey(pid: pid, start: start))
+        }.compactMap { $0 }
+    }
+
     /// Runs with usage recorded in the range, and the CPU seconds of that usage, so both describe one set. A run
     /// left open by a crash has no later usage, so it can't inflate ranges after it.
     public func agentRunTotals(machineId: String, from: Date, to: Date) throws(DatabaseError) -> (runs: Int, cpuSeconds: Double) {

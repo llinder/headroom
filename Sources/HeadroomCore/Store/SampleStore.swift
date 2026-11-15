@@ -301,6 +301,12 @@ public final class SampleStore {
                 .event(ts: Self.seconds(ts), kind: "tag", payload: Self.json(["text": text]))
             case let .command(ts, exe, seconds):
                 .event(ts: Self.seconds(ts), kind: "command", payload: Self.json(CommandPayload(exe: exe, seconds: seconds)))
+            case let .agentWarning(ts):
+                .event(ts: Self.seconds(ts), kind: "agent_warning", payload: Self.json([String: String]()))
+            case let .containerIntent(ts, rootPid, rootStart):
+                .event(
+                    ts: Self.seconds(ts), kind: "container_intent",
+                    payload: Self.json(["rootPid": String(rootPid), "rootStart": String(rootStart)]))
             case let .agentSession(ts, tool, sessionId, model, rootPid, rootStart):
                 .session(
                     ts: Self.seconds(ts), tool: tool, sessionId: sessionId, model: model,
