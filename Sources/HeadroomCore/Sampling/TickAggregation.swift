@@ -46,3 +46,23 @@ public enum TickAggregation {
         return (entries { $0.cpuSeconds }, entries { Double($0.footprint) })
     }
 }
+
+/// Swap change over roughly the last minute. Samples are capped so a long-running daemon keeps constant state.
+public struct SwapGrowth: Sendable {
+    private static let window = 60.0
+    private static let minAge = 55.0
+    private static let capacity = 8
+    private var samples: [(at: Double, used: UInt64)] = []
+
+    public init() {}
+
+    public mutating func record(swapUsed: UInt64, at: Double) -> Int64 {
+        let reference = samples
+            .filter { at - $0.at >= Self.minAge }
+            .min { abs(at - $0.at - Self.window) < abs(at - $1.at - Self.window) }
+        samples.append((at: at, used: swapUsed))
+        if samples.count > Self.capacity { samples.removeFirst() }
+        guard let reference else { return 0 }
+        return Int64(clamping: Int128(swapUsed) - Int128(reference.used))
+    }
+}

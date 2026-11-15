@@ -25,6 +25,7 @@ final class Recorder {
     private let timebase: mach_timebase_info_data_t
     private let clock = SuspendingClock()
     private var liveState: LiveStateWriter
+    private var swapGrowth = SwapGrowth()
     private var pipeline: SamplingPipeline
     private var scanner: DiagnosticScanner
     private var power: PowerMonitor?
@@ -284,7 +285,8 @@ final class Recorder {
             diskFree: tick.disk.free, diskCapacity: tick.disk.capacity,
             pressure: UInt8(tick.memory.pressure.rawValue), thermal: UInt8(tick.thermal.rawValue),
             limitFlags: tick.flags.rawValue,
-            activeAgents: UInt16(clamping: tick.agents.activeCount), idleAgents: UInt16(clamping: tick.agents.idleCount))
+            activeAgents: UInt16(clamping: tick.agents.activeCount), idleAgents: UInt16(clamping: tick.agents.idleCount),
+            swapGrowthBytesPerMin: swapGrowth.record(swapUsed: tick.memory.swapUsed, at: tick.ts))
         guard !liveState.write(snapshot), tick.ts - lastLiveWarning >= Double(Self.hour) else { return }
         lastLiveWarning = tick.ts
         log.error("live state write failed")

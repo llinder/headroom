@@ -13,13 +13,17 @@ public struct LiveSnapshot: Sendable, Equatable {
     public var limitFlags: UInt8
     public var activeAgents: UInt16
     public var idleAgents: UInt16
+    public var leftoverCount: UInt16
+    public var leftoverBytes: UInt64
+    public var swapGrowthBytesPerMin: Int64
 
     public init(
         timestamp: Double, cpuBusy: Float,
         memUsed: UInt64, memTotal: UInt64, swapUsed: UInt64,
         diskFree: UInt64, diskCapacity: UInt64,
         pressure: UInt8, thermal: UInt8, limitFlags: UInt8,
-        activeAgents: UInt16, idleAgents: UInt16
+        activeAgents: UInt16, idleAgents: UInt16,
+        leftoverCount: UInt16 = 0, leftoverBytes: UInt64 = 0, swapGrowthBytesPerMin: Int64 = 0
     ) {
         self.timestamp = timestamp
         self.cpuBusy = cpuBusy
@@ -33,6 +37,9 @@ public struct LiveSnapshot: Sendable, Equatable {
         self.limitFlags = limitFlags
         self.activeAgents = activeAgents
         self.idleAgents = idleAgents
+        self.leftoverCount = leftoverCount
+        self.leftoverBytes = leftoverBytes
+        self.swapGrowthBytesPerMin = swapGrowthBytesPerMin
     }
 }
 
@@ -55,6 +62,9 @@ private enum Layout {
     static let diskCapacity = 64
     static let activeAgents = 72
     static let idleAgents = 74
+    static let leftoverCount = 76
+    static let leftoverBytes = 80
+    static let swapGrowth = 88
     static let seqEnd = 120
 }
 
@@ -95,6 +105,9 @@ public struct LiveStateWriter: Sendable {
             base.storeBytes(of: s.diskCapacity.littleEndian, toByteOffset: Layout.diskCapacity, as: UInt64.self)
             base.storeBytes(of: s.activeAgents.littleEndian, toByteOffset: Layout.activeAgents, as: UInt16.self)
             base.storeBytes(of: s.idleAgents.littleEndian, toByteOffset: Layout.idleAgents, as: UInt16.self)
+            base.storeBytes(of: s.leftoverCount.littleEndian, toByteOffset: Layout.leftoverCount, as: UInt16.self)
+            base.storeBytes(of: s.leftoverBytes.littleEndian, toByteOffset: Layout.leftoverBytes, as: UInt64.self)
+            base.storeBytes(of: s.swapGrowthBytesPerMin.littleEndian, toByteOffset: Layout.swapGrowth, as: Int64.self)
             base.storeBytes(of: seq.littleEndian, toByteOffset: Layout.seqEnd, as: UInt64.self)
         }
         let fd = open(tmpURL.path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o644)
@@ -138,7 +151,10 @@ public enum LiveStateReader {
                 thermal: raw[Layout.thermal],
                 limitFlags: raw[Layout.limitFlags],
                 activeAgents: UInt16(littleEndian: raw.loadUnaligned(fromByteOffset: Layout.activeAgents, as: UInt16.self)),
-                idleAgents: UInt16(littleEndian: raw.loadUnaligned(fromByteOffset: Layout.idleAgents, as: UInt16.self))
+                idleAgents: UInt16(littleEndian: raw.loadUnaligned(fromByteOffset: Layout.idleAgents, as: UInt16.self)),
+                leftoverCount: UInt16(littleEndian: raw.loadUnaligned(fromByteOffset: Layout.leftoverCount, as: UInt16.self)),
+                leftoverBytes: UInt64(littleEndian: raw.loadUnaligned(fromByteOffset: Layout.leftoverBytes, as: UInt64.self)),
+                swapGrowthBytesPerMin: Int64(littleEndian: raw.loadUnaligned(fromByteOffset: Layout.swapGrowth, as: Int64.self))
             )
         }
     }
