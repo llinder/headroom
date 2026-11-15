@@ -15,9 +15,9 @@ private func object(_ data: Data) throws -> [String: Any] {
     try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
 }
 
-private func commands(_ data: Data) throws -> [String] {
+private func commands(_ data: Data, event: String = "SessionStart") throws -> [String] {
     let hooks = try #require(try object(data)["hooks"] as? [String: Any])
-    let groups = try #require(hooks["SessionStart"] as? [[String: Any]])
+    let groups = try #require(hooks[event] as? [[String: Any]])
     return groups.flatMap { ($0["hooks"] as? [[String: Any]] ?? []).compactMap { $0["command"] as? String } }
 }
 
@@ -36,7 +36,7 @@ private func commands(_ data: Data) throws -> [String] {
     }
 
     @Test func mergePreservesExisting() throws {
-        let out = try HookConfig.merged(Data(existing.utf8), command: ours)
+        let out = try HookConfig.merged(Data(existing.utf8), event: "SessionStart", matcher: nil, command: ours)
         let root = try object(out)
         #expect(root["statusLine"] != nil)
         #expect(root["permissions"] != nil)
@@ -44,36 +44,36 @@ private func commands(_ data: Data) throws -> [String] {
     }
 
     @Test func mergeIdempotent() throws {
-        let once = try HookConfig.merged(Data(existing.utf8), command: ours)
-        let twice = try HookConfig.merged(once, command: ours)
+        let once = try HookConfig.merged(Data(existing.utf8), event: "SessionStart", matcher: nil, command: ours)
+        let twice = try HookConfig.merged(once, event: "SessionStart", matcher: nil, command: ours)
         #expect(try commands(twice).filter { $0.contains("headroom agent-hook") }.count == 1)
         #expect(once == twice)
-        #expect(HookConfig.contains(twice))
+        #expect(HookConfig.contains(twice, event: "SessionStart"))
     }
 
     @Test func mergeWithMarkerReturnsTheOriginalBytes() throws {
         let installed = Data(
             #"{ "zeta": 1, "hooks": {"SessionStart": [{"hooks": [{"command": "\#(ours)", "type": "command"}]}]}, "alpha": "a/b" }"#
                 .utf8)
-        #expect(try HookConfig.merged(installed, command: ours) == installed)
+        #expect(try HookConfig.merged(installed, event: "SessionStart", matcher: nil, command: ours) == installed)
     }
 
     @Test func removeOnlyOurs() throws {
-        let merged = try HookConfig.merged(Data(existing.utf8), command: ours)
+        let merged = try HookConfig.merged(Data(existing.utf8), event: "SessionStart", matcher: nil, command: ours)
         let out = try HookConfig.removed(merged)
         #expect(try commands(out) == ["bash herdr-agent-state.sh session"])
-        #expect(!HookConfig.contains(out))
+        #expect(!HookConfig.contains(out, event: "SessionStart"))
     }
 
     @Test func removeDropsEmptiedKeys() throws {
-        let merged = try HookConfig.merged(Data(#"{"model":"m"}"#.utf8), command: ours)
+        let merged = try HookConfig.merged(Data(#"{"model":"m"}"#.utf8), event: "SessionStart", matcher: nil, command: ours)
         let out = try object(try HookConfig.removed(merged))
         #expect(out["hooks"] == nil)
         #expect(out["model"] as? String == "m")
     }
 
     @Test func nilInputCreates() throws {
-        let out = try HookConfig.merged(nil, command: ours)
+        let out = try HookConfig.merged(nil, event: "SessionStart", matcher: nil, command: ours)
         let hooks = try #require(try object(out)["hooks"] as? [String: Any])
         let group = try #require((hooks["SessionStart"] as? [[String: Any]])?.first)
         let entry = try #require((group["hooks"] as? [[String: Any]])?.first)
@@ -82,9 +82,41 @@ private func commands(_ data: Data) throws -> [String] {
         #expect(entry["timeout"] as? Int == 5)
     }
 
+    @Test func upgradeFromPhase1AddsPreToolUse() throws {
+        let phase1 = try HookConfig.merged(Data(existing.utf8), event: "SessionStart", matcher: nil, command: ours)
+        let pre = "/Users/x/.local/bin/headroom agent-hook pretool claude"
+        let out = try HookConfig.merged(phase1, event: "PreToolUse", matcher: "Bash", command: pre)
+        #expect(try commands(out) == ["bash herdr-agent-state.sh session", ours])
+        #expect(try commands(out, event: "PreToolUse") == [pre])
+        let hooks = try #require(try object(out)["hooks"] as? [String: Any])
+        let group = try #require((hooks["PreToolUse"] as? [[String: Any]])?.first)
+        #expect(group["matcher"] as? String == "Bash")
+        #expect(HookConfig.contains(out, event: "PreToolUse"))
+    }
+
+    @Test func mergeIsIdempotentPerEvent() throws {
+        let pre = "/Users/x/.local/bin/headroom agent-hook pretool claude"
+        let once = try HookConfig.merged(Data(existing.utf8), event: "PreToolUse", matcher: "Bash", command: pre)
+        let twice = try HookConfig.merged(once, event: "PreToolUse", matcher: "Bash", command: pre)
+        #expect(once == twice)
+    }
+
+    @Test func removeDropsAllOurEventsKeepsOthers() throws {
+        let foreign = Data(
+            #"{"hooks":{"PreToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"other.sh"}]}]}}"#.utf8)
+        let pre = "/Users/x/.local/bin/headroom agent-hook pretool claude"
+        let a = try HookConfig.merged(foreign, event: "SessionStart", matcher: nil, command: ours)
+        let b = try HookConfig.merged(a, event: "PreToolUse", matcher: "Bash", command: pre)
+        let out = try HookConfig.removed(b)
+        #expect(try commands(out, event: "PreToolUse") == ["other.sh"])
+        let hooks = try #require(try object(out)["hooks"] as? [String: Any])
+        #expect(hooks["SessionStart"] == nil)
+        #expect(!HookConfig.contains(out, event: "PreToolUse"))
+    }
+
     @Test func neverTouchesStatusLine() throws {
         let before = try #require(try object(Data(existing.utf8))["statusLine"])
-        let after = try #require(try object(try HookConfig.merged(Data(existing.utf8), command: ours))["statusLine"])
+        let after = try #require(try object(try HookConfig.merged(Data(existing.utf8), event: "SessionStart", matcher: nil, command: ours))["statusLine"])
         let opts: JSONSerialization.WritingOptions = [.sortedKeys, .fragmentsAllowed]
         #expect(
             try JSONSerialization.data(withJSONObject: before, options: opts)
@@ -92,8 +124,8 @@ private func commands(_ data: Data) throws -> [String] {
     }
 
     @Test func nonObjectIsRejected() {
-        #expect(throws: HookConfigError.self) { try HookConfig.merged(Data("[1]".utf8), command: ours) }
-        #expect(throws: HookConfigError.self) { try HookConfig.merged(Data("nope".utf8), command: ours) }
+        #expect(throws: HookConfigError.self) { try HookConfig.merged(Data("[1]".utf8), event: "SessionStart", matcher: nil, command: ours) }
+        #expect(throws: HookConfigError.self) { try HookConfig.merged(Data("nope".utf8), event: "SessionStart", matcher: nil, command: ours) }
     }
 }
 
@@ -194,12 +226,31 @@ private final class Home {
         #expect(try FileManager.default.contentsOfDirectory(atPath: claudeDir).count == before.count)
     }
 
+    @Test func installAgentsWritesBothEventsForBothTools() throws {
+        let h = try Home()
+        try FileManager.default.createDirectory(at: h.home.appending(path: ".codex"), withIntermediateDirectories: true)
+        let (_, out, _) = h.install(agents: true)
+        let abs = h.home.appending(path: ".local/bin/headroom").path
+        for (path, tool) in [(".claude/settings.json", "claude"), (".codex/hooks.json", "codex")] {
+            let data = try Data(contentsOf: h.home.appending(path: path))
+            #expect(try commands(data) == ["\(abs) agent-hook \(tool)"])
+            #expect(try commands(data, event: "PreToolUse") == ["\(abs) agent-hook pretool \(tool)"])
+            let hooks = try #require(try object(data)["hooks"] as? [String: Any])
+            let group = try #require((hooks["PreToolUse"] as? [[String: Any]])?.first)
+            #expect(group["matcher"] as? String == "Bash")
+        }
+        #expect(out.contains("codex: approve the new headroom hooks when Codex asks you to trust them"))
+    }
+
     @Test func installedFileIsLeftByteIdentical() throws {
         let h = try Home()
         let settings = h.home.appending(path: ".claude/settings.json")
         let abs = h.home.appending(path: ".local/bin/headroom").path
         let installed = Data(
-            #"{ "zeta": 1, "hooks": {"SessionStart": [{"hooks": [{"command": "\#(abs) agent-hook claude"}]}]} }"#.utf8)
+            #"""
+            { "zeta": 1, "hooks": {"SessionStart": [{"hooks": [{"command": "\#(abs) agent-hook claude"}]}],
+            "PreToolUse": [{"matcher": "Bash", "hooks": [{"command": "\#(abs) agent-hook pretool claude"}]}]} }
+            """#.utf8)
         try installed.write(to: settings)
         let (_, out, _) = h.install(agents: true)
         #expect(try Data(contentsOf: settings) == installed)

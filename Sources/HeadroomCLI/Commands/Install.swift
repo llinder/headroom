@@ -27,15 +27,19 @@ enum HookConfig {
     static let marker = "headroom agent-hook"
     private static let writing: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
 
-    /// An already-installed file comes back as the same bytes, so a reinstall never rewrites, re-sorts or backs it up.
-    static func merged(_ json: Data?, command: String) throws -> Data {
+    /// An entry with exactly this command under the event leaves the file as the same bytes, so a reinstall never
+    /// rewrites, re-sorts or backs it up.
+    static func merged(_ json: Data?, event: String, matcher: String?, command: String) throws -> Data {
         var root = try parse(json)
-        if let json, contains(root) { return json }
         var hooks = try section(root["hooks"])
-        var groups = try groupList(hooks["SessionStart"])
+        var groups = try groupList(hooks[event], event: event)
+        let present = groups.contains { ($0["hooks"] as? [[String: Any]] ?? []).contains { $0["command"] as? String == command } }
+        if let json, present { return json }
         let entry: [String: Any] = ["type": "command", "command": command, "timeout": 5]
-        groups.append(["hooks": [entry]])
-        hooks["SessionStart"] = groups
+        var group: [String: Any] = ["hooks": [entry]]
+        group["matcher"] = matcher
+        groups.append(group)
+        hooks[event] = groups
         root["hooks"] = hooks
         return try encode(root)
     }
@@ -43,30 +47,27 @@ enum HookConfig {
     static func removed(_ json: Data) throws -> Data {
         var root = try parse(json)
         var hooks = try section(root["hooks"])
-        guard hooks["SessionStart"] != nil else { return try encode(root) }
-        let kept = try groupList(hooks["SessionStart"]).compactMap { group -> [String: Any]? in
-            guard let entries = group["hooks"] as? [[String: Any]] else { return group }
-            let rest = entries.filter { !isOurs($0) }
-            if rest.count == entries.count { return group }
-            if rest.isEmpty { return nil }
-            var copy = group
-            copy["hooks"] = rest
-            return copy
+        for (event, value) in hooks {
+            guard let groups = value as? [[String: Any]] else { continue }
+            let kept = groups.compactMap { group -> [String: Any]? in
+                guard let entries = group["hooks"] as? [[String: Any]] else { return group }
+                let rest = entries.filter { !isOurs($0) }
+                if rest.count == entries.count { return group }
+                if rest.isEmpty { return nil }
+                var copy = group
+                copy["hooks"] = rest
+                return copy
+            }
+            hooks[event] = kept.isEmpty ? nil : kept
         }
-        hooks["SessionStart"] = kept.isEmpty ? nil : kept
         root["hooks"] = hooks.isEmpty ? nil : hooks
         return try encode(root)
     }
 
-    static func contains(_ json: Data) -> Bool {
-        guard let root = try? parse(json) else { return false }
-        return contains(root)
-    }
-
-    private static func contains(_ root: [String: Any]) -> Bool {
-        guard let hooks = root["hooks"] as? [String: Any], let groups = hooks["SessionStart"] as? [[String: Any]] else {
-            return false
-        }
+    static func contains(_ json: Data, event: String) -> Bool {
+        guard let root = try? parse(json), let hooks = root["hooks"] as? [String: Any],
+            let groups = hooks[event] as? [[String: Any]]
+        else { return false }
         return groups.contains { ($0["hooks"] as? [[String: Any]] ?? []).contains(where: isOurs) }
     }
 
@@ -88,10 +89,10 @@ enum HookConfig {
         return dict
     }
 
-    private static func groupList(_ value: Any?) throws -> [[String: Any]] {
+    private static func groupList(_ value: Any?, event: String) throws -> [[String: Any]] {
         guard let value else { return [] }
         guard let list = value as? [[String: Any]] else {
-            throw HookConfigError(message: "hooks.SessionStart is not a list of objects")
+            throw HookConfigError(message: "hooks.\(event) is not a list of objects")
         }
         return list
     }
@@ -102,6 +103,7 @@ enum HookConfig {
 }
 
 enum Install {
+    private static let hookEvents = ["SessionStart", "PreToolUse"]
     private static let binaries = ["headroom", "headroomd"]
     private static let bootstrapAttempts = 5
 
@@ -165,8 +167,12 @@ enum Install {
         let exe = bin.appending(path: "headroom").path
         for (file, tool) in hookFiles(home: home) where fm.fileExists(atPath: file.deletingLastPathComponent().path) {
             update(file, now: now, out: out, err: err) {
-                try HookConfig.merged($0, command: "\(exe) agent-hook \(tool)")
+                let session = try HookConfig.merged(
+                    $0, event: "SessionStart", matcher: nil, command: "\(exe) agent-hook \(tool)")
+                return try HookConfig.merged(
+                    session, event: "PreToolUse", matcher: "Bash", command: "\(exe) agent-hook pretool \(tool)")
             }
+            if tool == "codex" { out("codex: approve the new headroom hooks when Codex asks you to trust them") }
         }
         out(
             """
@@ -192,7 +198,7 @@ enum Install {
         }
         for (file, _) in hookFiles(home: home) where fm.fileExists(atPath: file.path) {
             update(file, now: now, out: out, err: err) { data in
-                guard let data, HookConfig.contains(data) else { return nil }
+                guard let data, hookEvents.contains(where: { HookConfig.contains(data, event: $0) }) else { return nil }
                 return try HookConfig.removed(data)
             }
         }
