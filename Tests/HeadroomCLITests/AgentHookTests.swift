@@ -282,6 +282,174 @@ private let releaseBinary: URL? = {
         #expect(spooled(spool).count == 2)
     }
 
+    private static let pretoolNow = 1_000_000.0
+    private static let agentChain: [Int32: ProcessIdentity] = [
+        10: identity(10, ppid: 20, path: "/bin/zsh"),
+        20: identity(20, ppid: 1, path: "/usr/local/bin/claude"),
+    ]
+
+    private func pretoolSnapshot(age: Double = 1, pressure: UInt8 = 1) -> LiveSnapshot {
+        LiveSnapshot(
+            timestamp: Self.pretoolNow - age, cpuBusy: 0, memUsed: 0, memTotal: 0, swapUsed: 14_000_000_000,
+            diskFree: 0, diskCapacity: 0, pressure: pressure, thermal: 0, limitFlags: 0,
+            activeAgents: 0, idleAgents: 0, swapGrowthBytesPerMin: pressure == 4 ? 600_000_000 : 0)
+    }
+
+    private func bashInput(_ command: String, session: String = "s1", agent: String? = nil) -> Data {
+        var object: [String: Any] = [
+            "session_id": session, "hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": ["command": command, "description": "d"],
+        ]
+        if let agent { object["agent_id"] = agent }
+        return (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
+    }
+
+    private func pretool(
+        _ stdin: Data, snapshot: LiveSnapshot?, paths: Paths, now: Double = pretoolNow, tool: String = "claude"
+    ) -> (stdout: String?, spool: [SpoolRecord]) {
+        AgentHook.pretool(
+            tool: tool, stdin: { stdin }, snapshot: snapshot, now: now, paths: paths, config: { HeadroomConfig() },
+            parentPid: 10, lookup: { Self.agentChain[$0] }, rules: { .defaults })
+    }
+
+    private func throttleFiles(_ paths: Paths) -> [String] {
+        (try? FileManager.default.contentsOfDirectory(atPath: paths.pretool.path)) ?? []
+    }
+
+    @Test func noTriggerNoOutputButIntentRecorded() throws {
+        let dir = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let paths = Paths(root: dir)
+        let result = pretool(bashInput("docker run x"), snapshot: pretoolSnapshot(), paths: paths)
+        #expect(result.stdout == nil)
+        let intent = SpoolRecord.containerIntent(ts: Self.pretoolNow, rootPid: 20, rootStart: 20_000)
+        #expect(result.spool == [intent])
+        #expect(spooled(Spool(url: paths.spool)) == [intent])
+    }
+
+    @Test func intentIsThrottledPerMinuteAndRecordedWithoutSnapshot() throws {
+        let dir = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let paths = Paths(root: dir)
+        #expect(pretool(bashInput("kind create cluster"), snapshot: nil, paths: paths).spool.count == 1)
+        #expect(pretool(bashInput("kind create cluster"), snapshot: nil, paths: paths, now: Self.pretoolNow + 30).spool.isEmpty)
+        #expect(pretool(bashInput("kind create cluster"), snapshot: nil, paths: paths, now: Self.pretoolNow + 60).spool.count == 1)
+        #expect(pretool(bashInput("ls"), snapshot: nil, paths: paths, now: Self.pretoolNow + 600).spool.isEmpty)
+        #expect(spooled(Spool(url: paths.spool)).count == 2)
+    }
+
+    @Test func criticalGivesAdviceOncePerFiveMinutes() throws {
+        let dir = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let paths = Paths(root: dir)
+        let first = pretool(bashInput("go test ./..."), snapshot: pretoolSnapshot(pressure: 4), paths: paths)
+        let second = pretool(
+            bashInput("go test ./..."), snapshot: pretoolSnapshot(age: -59, pressure: 4), paths: paths,
+            now: Self.pretoolNow + 60)
+        #expect(first.stdout != nil)
+        #expect(first.spool == [.agentWarning(ts: Self.pretoolNow)])
+        #expect(second.stdout == nil)
+        #expect(second.spool.isEmpty)
+        #expect(spooled(Spool(url: paths.spool)) == [.agentWarning(ts: Self.pretoolNow)])
+        let later = pretool(
+            bashInput("go test ./..."), snapshot: pretoolSnapshot(age: -299, pressure: 4), paths: paths,
+            now: Self.pretoolNow + 300)
+        #expect(later.stdout != nil)
+    }
+
+    @Test func subagentsThrottledSeparately() throws {
+        let dir = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let paths = Paths(root: dir)
+        let snapshot = pretoolSnapshot(pressure: 4)
+        #expect(pretool(bashInput("make", agent: "a1"), snapshot: snapshot, paths: paths).stdout != nil)
+        #expect(pretool(bashInput("make", agent: "a2"), snapshot: snapshot, paths: paths).stdout != nil)
+        #expect(pretool(bashInput("make"), snapshot: snapshot, paths: paths).stdout != nil)
+        #expect(pretool(bashInput("make", agent: "a1"), snapshot: snapshot, paths: paths).stdout == nil)
+        #expect(Set(throttleFiles(paths)) == ["s1.a1", "s1.a2", "s1"])
+    }
+
+    @Test func malformedStdinIsSilent() throws {
+        let dir = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let paths = Paths(root: dir)
+        let inputs = [
+            Data(), Data("not json".utf8), Data(repeating: 0x78, count: 70 * 1024),
+            Data(#"{"session_id":"s1","tool_name":"Bash","note":"docker run x"}"#.utf8),
+            bashInput("docker run x", session: "../etc"),
+        ]
+        for input in inputs {
+            let result = pretool(input, snapshot: pretoolSnapshot(pressure: 4), paths: paths)
+            #expect(result.stdout == nil)
+            #expect(result.spool.isEmpty)
+        }
+        #expect(spooled(Spool(url: paths.spool)).isEmpty)
+        #expect(throttleFiles(paths).isEmpty)
+    }
+
+    @Test func unknownToolIsSilentForPretool() throws {
+        let dir = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let paths = Paths(root: dir)
+        let result = pretool(bashInput("docker run x"), snapshot: pretoolSnapshot(pressure: 4), paths: paths, tool: "vim")
+        #expect(result.stdout == nil)
+        #expect(result.spool.isEmpty)
+        #expect(throttleFiles(paths).isEmpty)
+    }
+
+    @Test func outputJSONShape() throws {
+        struct Output: Decodable {
+            struct Specific: Decodable {
+                let hookEventName: String
+                let additionalContext: String
+            }
+            let hookSpecificOutput: Specific
+        }
+        let dir = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let paths = Paths(root: dir)
+        let snapshot = pretoolSnapshot(pressure: 4)
+        for tool in ["claude", "codex"] {
+            let stdout = try #require(
+                pretool(bashInput("go test ./...", session: tool), snapshot: snapshot, paths: paths, tool: tool).stdout)
+            #expect(!stdout.contains("\n"))
+            #expect(!stdout.contains("permissionDecision"))
+            let output = try JSONDecoder().decode(Output.self, from: Data(stdout.utf8))
+            #expect(output.hookSpecificOutput.hookEventName == "PreToolUse")
+            #expect(output.hookSpecificOutput.additionalContext
+                == PreToolAdvice.text(trigger: .critical, kind: .go, snapshot: snapshot))
+        }
+    }
+
+    @Test func unknownModeOnOldBinaryShape() throws {
+        #expect(HeadroomCLI.run(["headroom", "agent-hook", "pretool"]) == 0)
+        #expect(try parse(["headroom", "agent-hook", "pretool", "claude"]) == .agentPretool(tool: "claude"))
+        #expect(try parse(["headroom", "agent-hook", "claude"]) == .agentHook(tool: "claude"))
+    }
+
+    @Test(.enabled(if: releaseBinary != nil, "needs `swift build -c release`"), .enabled(if: ProcessInfo.processInfo.environment["HEADROOM_BENCH"] == "1", "wall-clock budget; run via make bench"))
+    func pretoolIsFast() throws {
+        let binary = try #require(releaseBinary)
+        let dir = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var writer = try LiveStateWriter(url: Paths(root: dir).liveState)
+        let written = writer.write(pretoolSnapshot(age: Date().timeIntervalSince1970 - Self.pretoolNow + 3600, pressure: 4))
+        #expect(written)
+
+        var durations: [Double] = []
+        for _ in 0..<100 {
+            let start = DispatchTime.now().uptimeNanoseconds
+            let result = try runProcess(
+                binary.path, ["agent-hook", "pretool", "claude"], stdin: bashInput("go test ./..."),
+                environment: ["HEADROOM_ROOT": dir.path])
+            durations.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
+            #expect(result.status == 0)
+            #expect(result.stdout.isEmpty)
+        }
+        let median = durations.sorted()[50]
+        #expect(median < 10, "median \(median) ms")
+    }
+
     // Wall-clock budgets are flaky on a loaded machine, so they only run under `make bench`.
     @Test(.enabled(if: releaseBinary != nil, "needs `swift build -c release`"), .enabled(if: ProcessInfo.processInfo.environment["HEADROOM_BENCH"] == "1", "wall-clock budget; run via make bench"))
     func releaseBinaryHookIsFast() throws {

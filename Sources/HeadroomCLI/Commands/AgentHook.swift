@@ -13,6 +13,25 @@ public enum AgentHook {
         let model: String?
     }
 
+    private struct PretoolPayload: Decodable {
+        struct ToolInput: Decodable {
+            let command: String
+        }
+        let session_id: String
+        let agent_id: String?
+        let tool_input: ToolInput
+    }
+
+    private struct HookOutput: Encodable {
+        struct Specific: Encodable {
+            let hookEventName = "PreToolUse"
+            let additionalContext: String
+        }
+        let hookSpecificOutput: Specific
+    }
+
+    private static let containerWords = ["docker", "kind", "compose"]
+
     /// Always returns 0: a hook must never fail the agent that runs it.
     static func run(tool: String) -> Int32 {
         let paths = Paths.standard()
@@ -28,6 +47,87 @@ public enum AgentHook {
     public static func runFast(tool: String) -> Never {
         signal(SIGPIPE, SIG_IGN)
         exit(run(tool: tool))
+    }
+
+    /// Always returns 0 and never sets a permission decision: the advice must not block or fail the command.
+    static func runPretool(tool: String) -> Int32 {
+        guard tools.contains(tool) else { return 0 }
+        let paths = Paths.standard()
+        // live.state comes first: when it is stale and the command names no container tool, nothing else is read.
+        let snapshot = LiveStateReader.read(url: paths.liveState)
+        let result = pretool(
+            tool: tool, stdin: { readStdin(fd: STDIN_FILENO) }, snapshot: snapshot, now: Date().timeIntervalSince1970,
+            paths: paths, config: { HeadroomConfig.load(from: paths.config).0 }, parentPid: getppid(),
+            lookup: ProcessSampler.identity, rules: { GroupRules.effective(from: paths.groups).0 })
+        if let stdout = result.stdout { try? FileHandle.standardOutput.write(contentsOf: Data((stdout + "\n").utf8)) }
+        return 0
+    }
+
+    /// Runs before every shell command an agent issues, so it skips config loading and the rest of the CLI.
+    public static func runPretoolFast(tool: String) -> Never {
+        signal(SIGPIPE, SIG_IGN)
+        exit(runPretool(tool: tool))
+    }
+
+    /// Container intent is recorded before the trigger check, because leftover ownership needs it even when
+    /// there is no pressure. Returns the hook JSON to print, if any, and the records it appended to the spool.
+    static func pretool(
+        tool: String, stdin: () -> Data, snapshot: LiveSnapshot?, now: Double, paths: Paths,
+        config: () -> HeadroomConfig, parentPid: Int32, lookup: (Int32) -> ProcessIdentity?, rules: () -> GroupRules
+    ) -> (stdout: String?, spool: [SpoolRecord]) {
+        guard tools.contains(tool) else { return (nil, []) }
+        let fresh = snapshot.map { now - $0.timestamp <= PreToolAdvice.staleSeconds } ?? false
+        let raw = stdin()
+        guard fresh || mentionsContainerTool(raw),
+            let payload = try? JSONDecoder().decode(PretoolPayload.self, from: raw)
+        else { return (nil, []) }
+        let command = payload.tool_input.command
+        let key = payload.agent_id.map { "\(payload.session_id).\($0)" } ?? payload.session_id
+        let throttle = PreToolAdvice.Throttle(directory: paths.pretool)
+        let spool = Spool(url: paths.spool)
+        var appended: [SpoolRecord] = []
+
+        let intentKey = key + ".ci"
+        if PreToolAdvice.classify(command, heavy: []).containerIntent,
+            throttle.due(key: intentKey, now: now, minutes: 1),
+            let root = outermostAgent(from: parentPid, lookup: lookup, rules: rules())
+        {
+            let record = SpoolRecord.containerIntent(ts: now, rootPid: root.key.pid, rootStart: root.key.start)
+            if spool.append(record) {
+                throttle.touch(key: intentKey, now: now)
+                appended.append(record)
+            }
+        }
+
+        guard fresh, let snapshot else { return (nil, appended) }
+        let agents = config().agents
+        guard let trigger = PreToolAdvice.trigger(snapshot, now: now, config: agents),
+            throttle.due(key: key, now: now, minutes: agents.adviceMinutes)
+        else { return (nil, appended) }
+        let text = PreToolAdvice.text(
+            trigger: trigger, kind: PreToolAdvice.classify(command, heavy: agents.heavyCommands).kind,
+            snapshot: snapshot)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .withoutEscapingSlashes
+        guard let json = try? encoder.encode(HookOutput(hookSpecificOutput: .init(additionalContext: text))) else {
+            return (nil, appended)
+        }
+        throttle.touch(key: key, now: now)
+        let warning = SpoolRecord.agentWarning(ts: now)
+        if spool.append(warning) { appended.append(warning) }
+        return (String(decoding: json, as: UTF8.self), appended)
+    }
+
+    /// A byte search over the raw input, so a stale snapshot only pays for JSON decoding when the command
+    /// could start a container.
+    private static func mentionsContainerTool(_ raw: Data) -> Bool {
+        raw.withUnsafeBytes { bytes in
+            containerWords.contains { word in
+                word.utf8CString.withUnsafeBufferPointer {
+                    memmem(bytes.baseAddress, bytes.count, $0.baseAddress, $0.count - 1) != nil
+                }
+            }
+        }
     }
 
     static func record(

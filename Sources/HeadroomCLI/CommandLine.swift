@@ -18,6 +18,7 @@ public enum Command: Equatable {
     case uninstall
     case statusline(format: String?, color: Bool, quiet: Bool)
     case agentHook(tool: String)
+    case agentPretool(tool: String)
     case hookZsh
     case recordCommand(exe: String, seconds: Double)
     case version
@@ -35,6 +36,7 @@ let usageText = """
       uninstall                  remove the LaunchAgent
       statusline [--format FMT] [--no-color] [--quiet]
       agent-hook <tool>          hook entry point for agent tools
+      agent-hook pretool <tool>  pre-command advice hook for agent tools
       hook zsh                   print the zsh preexec/precmd snippet
       record-command <exe> <seconds>
       version
@@ -80,6 +82,8 @@ public func parse(_ args: [String]) throws(UsageError) -> Command {
     case "statusline":
         return try parseStatusline(rest)
     case "agent-hook":
+        // A missing tool exits 0 silently, as an old binary does: hooks must never fail the agent.
+        if rest.first == "pretool", rest.count <= 2 { return .agentPretool(tool: rest.count == 2 ? rest[1] : "") }
         guard rest.count == 1, let tool = rest.first, !tool.hasPrefix("--") else {
             throw UsageError("agent-hook needs exactly one tool name")
         }
@@ -206,6 +210,8 @@ func run(_ args: [String], out: (String) -> Void, err: (String) -> Void) -> Int3
         return 0
     case let .agentHook(tool):
         return AgentHook.run(tool: tool)
+    case let .agentPretool(tool):
+        return AgentHook.runPretool(tool: tool)
     case .hookZsh:
         out(ShellHook.zshSnippet)
         return 0

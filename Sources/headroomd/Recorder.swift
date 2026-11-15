@@ -9,6 +9,8 @@ final class Recorder {
     private static let flushEvery = 6
     private static let spaceRefreshEvery = 6
     private static let scanEvery = 30
+    private static let pruneEvery = 360
+    private static let throttleMaxAge = 86_400.0
     private static let hour: Int64 = 3600
     private static let maxCatchUpHours: Int64 = 48
     // Rescans overlap the previous scan a little so a report written as a scan runs isn't missed;
@@ -20,6 +22,7 @@ final class Recorder {
     private let store: SampleStore
     private let machineId: String
     private let spool: Spool
+    private let pretool: URL
     private let readMeta: Statement
     private let writeMeta: Statement
     private let timebase: mach_timebase_info_data_t
@@ -61,6 +64,7 @@ final class Recorder {
         machineId = machine.machineId
         store = try SampleStore(db: db, machineId: machine.machineId, interval: Self.interval)
         spool = Spool(url: paths.spool)
+        pretool = paths.pretool
         liveState = try LiveStateWriter(url: paths.liveState)
         readMeta = try db.prepare("SELECT value FROM meta WHERE key=?")
         writeMeta = try db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)")
@@ -179,6 +183,7 @@ final class Recorder {
 
         if tickCount % Self.flushEvery == 0 { flushCycle(now: now) }
         if tickCount % Self.scanEvery == 0 { scanDiagnostics(now: now) }
+        if tickCount % Self.pruneEvery == 0 { pruneThrottles(now: now) }
     }
 
     private func handlePower(_ event: PowerEvent) {
@@ -276,6 +281,19 @@ final class Recorder {
             store.recordEvent(kind: event.kind, ts: event.ts, payload: event.payload)
         }
         nextScanSince = Date(timeIntervalSince1970: now - Self.scanOverlap)
+    }
+
+    /// The advice hook leaves one throttle file per agent session, so without this they would pile up forever.
+    private func pruneThrottles(now: Double) {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: pretool.path) else { return }
+        for name in names {
+            let path = pretool.appending(path: name).path
+            var st = stat()
+            guard lstat(path, &st) == 0, st.st_mode & S_IFMT == S_IFREG,
+                now - Double(st.st_mtimespec.tv_sec) > Self.throttleMaxAge
+            else { continue }
+            unlink(path)
+        }
     }
 
     private func writeLiveState(_ tick: Tick) {

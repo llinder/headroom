@@ -7,7 +7,7 @@ enum AdviceTrigger: Equatable { case critical, swapGrowing, leftovers }
 enum CommandKind { case go, container, build, js }
 
 enum PreToolAdvice {
-    private static let staleSeconds = 60.0
+    static let staleSeconds = 60.0
     private static let leftoverTriggerBytes: UInt64 = 1_000_000_000
     private static let wrappers: Set<String> = ["time", "env", "sudo"]
     private static let containerIntentPrefixes = ["docker run", "docker compose up", "kind create cluster", "docker buildx"]
