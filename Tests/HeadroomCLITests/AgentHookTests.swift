@@ -327,6 +327,17 @@ private let releaseBinary: URL? = {
         #expect(spooled(Spool(url: paths.spool)) == [intent])
     }
 
+    @Test func staleSnapshotStillRecordsKubectlAndHelmIntents() throws {
+        for command in ["kubectl apply -f x", "helm install x ./chart"] {
+            let dir = try scratchDirectory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let result = pretool(bashInput(command), snapshot: pretoolSnapshot(age: 600), paths: Paths(root: dir))
+            #expect(result.stdout == nil)
+            #expect(result.spool == [SpoolRecord.containerIntent(ts: Self.pretoolNow, rootPid: 20, rootStart: 20_000)],
+                    "\(command)")
+        }
+    }
+
     @Test func intentIsThrottledPerMinuteAndRecordedWithoutSnapshot() throws {
         let dir = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }

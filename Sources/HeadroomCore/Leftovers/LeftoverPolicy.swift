@@ -21,7 +21,9 @@ public struct RunFacts: Sendable, Equatable {
 public struct OwnershipFacts: Sendable {
     public var intents: [(ts: Double, root: ProcessKey)]
     public var runs: [ProcessKey: RunFacts]
-    /// Recorded awake seconds in [from, to): sleep and recorder gaps don't count toward idleness.
+    /// Recorded awake seconds in [from, to): sleep and recorder gaps don't count toward idleness. `to` must be the
+    /// `now` the facts were read at, because the bounded clock from `Queries.ownershipFacts` only holds the newest
+    /// samples before it and saturates at its idle threshold.
     public var awakeSeconds: @Sendable (Double, Double) -> Double
 
     public init(
@@ -88,11 +90,8 @@ public enum LeftoverPolicy {
         if !owners.isEmpty {
             // Several runs active in the creation minute can't be told apart, so the item waits for all of them.
             let allDone = owners.allSatisfy { run in
-                if let heir = inheritor(of: run, facts: facts)?.run {
-                    return isDone(heir, lastActivity: lastActivity(heir), threshold: idleThreshold, now: now, facts: facts)
-                }
-                return isDone(run, lastActivity: run.activeMinutes.last ?? run.started,
-                              threshold: idleThreshold, now: now, facts: facts)
+                let decider = inheritor(of: run, facts: facts)?.run ?? run
+                return isDone(decider, lastActivity: lastActivity(decider), threshold: idleThreshold, now: now, facts: facts)
             }
             return allDone ? .leftover(reason: ownerDone) : .notYet
         }

@@ -30,7 +30,7 @@ public enum AgentHook {
         let hookSpecificOutput: Specific
     }
 
-    private static let containerWords = ["docker", "kind", "compose"]
+    private static let containerWords = ["docker", "kind", "compose", "kubectl", "helm"]
 
     /// Always returns 0: a hook must never fail the agent that runs it.
     static func run(tool: String) -> Int32 {

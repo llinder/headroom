@@ -158,8 +158,8 @@ struct LeftoverPolicyTests {
     @Test func fallbackActiveMinuteOwner() {
         let minute = (t0 / 60).rounded(.down) * 60
         let active = facts(runs: [a: run(activeMinutes: [minute - 60, minute + 1200])])
-        #expect(decide(item(), facts: active, now: minute + 1200 + 3000) == .notYet)
-        #expect(decide(item(), facts: active, now: minute + 1200 + 3600)
+        #expect(decide(item(), facts: active, now: minute + 1260 + 3599) == .notYet)
+        #expect(decide(item(), facts: active, now: minute + 1260 + 3600)
             == .leftover(reason: "the agent session that started it is done"))
 
         let elsewhere = facts(runs: [a: run(activeMinutes: [minute - 120, minute + 60])])
@@ -225,6 +225,14 @@ struct LeftoverPolicyTests {
         #expect(decide(item(), facts: facts(runs: runs), now: t0 + 3600) == .notYet)
         let both = [a: run(ended: t0 + 120, activeMinutes: [minute]), b: run(ended: t0 + 200, activeMinutes: [minute])]
         #expect(decide(item(), facts: facts(runs: both), now: t0 + 600)
+            == .leftover(reason: "the agent session that started it is done"))
+    }
+
+    @Test func fallbackOwnerWithLaterIntentIsNotDone() {
+        let minute = (t0 / 60).rounded(.down) * 60
+        let f = facts(runs: [a: run(lastIntent: t0 + 3000, activeMinutes: [minute])])
+        #expect(decide(item(), facts: f, now: t0 + 4000) == .notYet)
+        #expect(decide(item(), facts: f, now: t0 + 6600)
             == .leftover(reason: "the agent session that started it is done"))
     }
 }
