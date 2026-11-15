@@ -112,6 +112,12 @@ private func tempDir() throws -> URL {
         #expect(stale.contains("agent hooks: none · run headroom install --agents"))
     }
 
+    @Test func versionIsBumpedForPhaseOnePointFive() {
+        var out: [String] = []
+        #expect(HeadroomCLI.run(["headroom", "--version"], out: { out.append($0) }, err: { _ in }) == 0)
+        #expect(out == ["headroom 0.2.0"])
+    }
+
     @Test func parseLeftoversAndKeep() throws {
         #expect(try parse(["headroom", "leftovers"]) == .leftovers(json: false, kept: false))
         #expect(try parse(["headroom", "leftovers", "--json", "--kept"]) == .leftovers(json: true, kept: true))
