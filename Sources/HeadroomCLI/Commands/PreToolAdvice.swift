@@ -15,7 +15,7 @@ enum PreToolAdvice {
     static func trigger(_ s: LiveSnapshot, now: Double, config: AgentsConfig) -> AdviceTrigger? {
         guard now - s.timestamp <= staleSeconds else { return nil }
         if s.pressure == 4 { return .critical }
-        if s.swapGrowthBytesPerMin >= config.swapGrowthBytesPerMin { return .swapGrowing }
+        if config.swapGrowthBytesPerMin > 0, s.swapGrowthBytesPerMin >= config.swapGrowthBytesPerMin { return .swapGrowing }
         if s.leftoverBytes >= leftoverTriggerBytes { return .leftovers }
         return nil
     }
@@ -92,7 +92,7 @@ enum PreToolAdvice {
         }
 
         private func validKey(_ key: String) -> Bool {
-            !key.isEmpty && key.utf8.count <= 128
+            !key.isEmpty && key.utf8.count <= 128 && key != "." && key != ".."
                 && key.utf8.allSatisfy {
                     ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A)
                         || $0 == 0x2E || $0 == 0x5F || $0 == 0x2D

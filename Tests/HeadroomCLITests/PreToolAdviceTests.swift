@@ -113,4 +113,25 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: dir.path))
         #expect(!FileManager.default.fileExists(atPath: dir.deletingLastPathComponent().appending(path: "x").path))
     }
+
+    @Test func dotKeysRejected() {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let throttle = PreToolAdvice.Throttle(directory: dir)
+        for key in [".", ".."] {
+            #expect(!throttle.due(key: key, now: 4_000_000_000, minutes: 5))
+            throttle.touch(key: key, now: 1000)
+        }
+        #expect(try! FileManager.default.contentsOfDirectory(atPath: dir.path).isEmpty)
+    }
+
+    @Test func nonPositiveGrowthThresholdDisablesTrigger() {
+        var custom = AgentsConfig()
+        for threshold: Int64 in [0, -1] {
+            custom.swapGrowthBytesPerMin = threshold
+            #expect(PreToolAdvice.trigger(snap(growth: 0), now: now, config: custom) == nil)
+            #expect(PreToolAdvice.trigger(snap(growth: 500_000_000), now: now, config: custom) == nil)
+        }
+    }
 }
