@@ -27,18 +27,53 @@ enum HookConfig {
     static let marker = "headroom agent-hook"
     private static let writing: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
 
-    /// An entry with exactly this command under the event leaves the file as the same bytes, so a reinstall never
-    /// rewrites, re-sorts or backs it up.
+    /// Headroom entries of the same mode (pretool or session) under an event are one entry: a moved binary rewrites
+    /// the command in place and leftover duplicates collapse. An already-correct file comes back as the same bytes,
+    /// so a reinstall never rewrites, re-sorts or backs it up.
     static func merged(_ json: Data?, event: String, matcher: String?, command: String) throws -> Data {
         var root = try parse(json)
         var hooks = try section(root["hooks"])
         var groups = try groupList(hooks[event], event: event)
-        let present = groups.contains { ($0["hooks"] as? [[String: Any]] ?? []).contains { $0["command"] as? String == command } }
-        if let json, present { return json }
-        let entry: [String: Any] = ["type": "command", "command": command, "timeout": 5]
-        var group: [String: Any] = ["hooks": [entry]]
-        group["matcher"] = matcher
-        groups.append(group)
+        let pretool = isPretool(command)
+        var found = false
+        var changed = false
+        var rebuilt: [[String: Any]] = []
+        for group in groups {
+            guard let entries = group["hooks"] as? [[String: Any]] else {
+                rebuilt.append(group)
+                continue
+            }
+            var kept: [[String: Any]] = []
+            for var entry in entries {
+                guard isOurs(entry), let existing = entry["command"] as? String, isPretool(existing) == pretool else {
+                    kept.append(entry)
+                    continue
+                }
+                if found {
+                    changed = true
+                    continue
+                }
+                found = true
+                if existing != command {
+                    entry["command"] = command
+                    changed = true
+                }
+                kept.append(entry)
+            }
+            if kept.isEmpty { continue }
+            var copy = group
+            copy["hooks"] = kept
+            rebuilt.append(copy)
+        }
+        if found {
+            if let json, !changed { return json }
+            groups = rebuilt
+        } else {
+            let entry: [String: Any] = ["type": "command", "command": command, "timeout": 5]
+            var group: [String: Any] = ["hooks": [entry]]
+            group["matcher"] = matcher
+            groups.append(group)
+        }
         hooks[event] = groups
         root["hooks"] = hooks
         return try encode(root)
@@ -47,20 +82,25 @@ enum HookConfig {
     static func removed(_ json: Data) throws -> Data {
         var root = try parse(json)
         var hooks = try section(root["hooks"])
+        var touched = false
         for (event, value) in hooks {
             guard let groups = value as? [[String: Any]] else { continue }
+            var eventTouched = false
             let kept = groups.compactMap { group -> [String: Any]? in
                 guard let entries = group["hooks"] as? [[String: Any]] else { return group }
                 let rest = entries.filter { !isOurs($0) }
                 if rest.count == entries.count { return group }
+                eventTouched = true
                 if rest.isEmpty { return nil }
                 var copy = group
                 copy["hooks"] = rest
                 return copy
             }
+            guard eventTouched else { continue }
+            touched = true
             hooks[event] = kept.isEmpty ? nil : kept
         }
-        root["hooks"] = hooks.isEmpty ? nil : hooks
+        if touched { root["hooks"] = hooks.isEmpty ? nil : hooks }
         return try encode(root)
     }
 
@@ -70,6 +110,8 @@ enum HookConfig {
         else { return false }
         return groups.contains { ($0["hooks"] as? [[String: Any]] ?? []).contains(where: isOurs) }
     }
+
+    private static func isPretool(_ command: String) -> Bool { command.contains(" agent-hook pretool ") }
 
     private static func isOurs(_ entry: [String: Any]) -> Bool {
         (entry["command"] as? String)?.contains(marker) == true
@@ -166,13 +208,13 @@ enum Install {
         guard agents else { return 0 }
         let exe = bin.appending(path: "headroom").path
         for (file, tool) in hookFiles(home: home) where fm.fileExists(atPath: file.deletingLastPathComponent().path) {
-            update(file, now: now, out: out, err: err) {
+            let written = update(file, now: now, out: out, err: err) {
                 let session = try HookConfig.merged(
                     $0, event: "SessionStart", matcher: nil, command: "\(exe) agent-hook \(tool)")
                 return try HookConfig.merged(
                     session, event: "PreToolUse", matcher: "Bash", command: "\(exe) agent-hook pretool \(tool)")
             }
-            if tool == "codex" { out("codex: approve the new headroom hooks when Codex asks you to trust them") }
+            if tool == "codex", written { out("codex: approve the new headroom hooks when Codex asks you to trust them") }
         }
         out(
             """
@@ -209,26 +251,27 @@ enum Install {
 
     /// Backs up the original and writes only when the content changes. Only a missing file counts as empty: an
     /// unreadable or unparseable one is reported and left alone. Symlinks are resolved so the link survives the write.
+    @discardableResult
     private static func update(
         _ original: URL, now: Date, out: (String) -> Void, err: (String) -> Void, transform: (Data?) throws -> Data?
-    ) {
+    ) -> Bool {
         let file = original.resolvingSymlinksInPath()
         let fm = FileManager.default
         var existing: Data?
         if fm.fileExists(atPath: file.path) {
             guard let data = try? Data(contentsOf: file) else {
                 err("\(original.path): unreadable, left unchanged")
-                return
+                return false
             }
             existing = data
         }
         do {
-            guard let updated = try transform(existing) else { return }
+            guard let updated = try transform(existing) else { return false }
             if let existing {
-                if updated == existing { return }
+                if updated == existing { return false }
                 let old = try JSONSerialization.jsonObject(with: existing) as? NSDictionary
                 let new = try JSONSerialization.jsonObject(with: updated) as? NSDictionary
-                if old == new { return }
+                if old == new { return false }
                 try backup(file, contents: existing, now: now)
             }
             // Atomic writes land a new inode at the default mode; configs here can hold tokens, so keep the original's.
@@ -236,10 +279,13 @@ enum Install {
             try updated.write(to: file, options: .atomic)
             try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: file.path)
             out("updated \(original.path)")
+            return true
         } catch let error as HookConfigError {
             err("\(original.path): \(error.message); left unchanged")
+            return false
         } catch {
             err("\(original.path): \(error.localizedDescription); left unchanged")
+            return false
         }
     }
 

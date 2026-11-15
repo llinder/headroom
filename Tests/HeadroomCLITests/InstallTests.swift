@@ -114,6 +114,50 @@ private func commands(_ data: Data, event: String = "SessionStart") throws -> [S
         #expect(!HookConfig.contains(out, event: "PreToolUse"))
     }
 
+    @Test func pathChangeReplacesInPlace() throws {
+        let old = "/old/headroom agent-hook pretool claude"
+        let moved = "/new/headroom agent-hook pretool claude"
+        let first = try HookConfig.merged(Data(existing.utf8), event: "PreToolUse", matcher: "Bash", command: old)
+        let out = try HookConfig.merged(first, event: "PreToolUse", matcher: "Bash", command: moved)
+        #expect(try commands(out, event: "PreToolUse") == [moved])
+        let hooks = try #require(try object(out)["hooks"] as? [String: Any])
+        let group = try #require((hooks["PreToolUse"] as? [[String: Any]])?.first)
+        #expect(group["matcher"] as? String == "Bash")
+    }
+
+    @Test func duplicateSameModeEntriesCollapse() throws {
+        let dupes = Data(
+            #"""
+            {"hooks":{"SessionStart":[
+            {"hooks":[{"type":"command","command":"/a/headroom agent-hook claude"}]},
+            {"hooks":[{"type":"command","command":"keep.sh"},{"type":"command","command":"/b/headroom agent-hook claude"}]}]}}
+            """#.utf8)
+        let out = try HookConfig.merged(dupes, event: "SessionStart", matcher: nil, command: ours)
+        #expect(try commands(out) == [ours, "keep.sh"])
+    }
+
+    @Test func foreignHookSharingGroupSurvivesRemove() throws {
+        let shared = Data(
+            #"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"other.sh"},{"command":"/a/headroom agent-hook pretool claude"}]}]}}"#
+                .utf8)
+        let out = try HookConfig.removed(shared)
+        #expect(try commands(out, event: "PreToolUse") == ["other.sh"])
+    }
+
+    @Test func sessionStartHasNoMatcherKey() throws {
+        let out = try HookConfig.merged(nil, event: "SessionStart", matcher: nil, command: ours)
+        let hooks = try #require(try object(out)["hooks"] as? [String: Any])
+        let group = try #require((hooks["SessionStart"] as? [[String: Any]])?.first)
+        #expect(group["matcher"] == nil)
+    }
+
+    @Test func foreignEmptyEventListSurvivesRemove() throws {
+        let src = Data(#"{"hooks":{"Stop":[],"SessionStart":[{"hooks":[{"command":"/a/headroom agent-hook claude"}]}]}}"#.utf8)
+        let hooks = try #require(try object(try HookConfig.removed(src))["hooks"] as? [String: Any])
+        #expect((hooks["Stop"] as? [Any])?.isEmpty == true)
+        #expect(hooks["SessionStart"] == nil)
+    }
+
     @Test func neverTouchesStatusLine() throws {
         let before = try #require(try object(Data(existing.utf8))["statusLine"])
         let after = try #require(try object(try HookConfig.merged(Data(existing.utf8), event: "SessionStart", matcher: nil, command: ours))["statusLine"])
@@ -240,6 +284,29 @@ private final class Home {
             #expect(group["matcher"] as? String == "Bash")
         }
         #expect(out.contains("codex: approve the new headroom hooks when Codex asks you to trust them"))
+    }
+
+    @Test func codexUserHooksSurviveInstall() throws {
+        let h = try Home()
+        let codex = h.home.appending(path: ".codex")
+        try FileManager.default.createDirectory(at: codex, withIntermediateDirectories: true)
+        let user = #"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"mine.sh"}]}]}}"#
+        try Data(user.utf8).write(to: codex.appending(path: "hooks.json"))
+        _ = h.install(agents: true)
+        let data = try Data(contentsOf: codex.appending(path: "hooks.json"))
+        let abs = h.home.appending(path: ".local/bin/headroom").path
+        #expect(try commands(data, event: "PreToolUse") == ["mine.sh", "\(abs) agent-hook pretool codex"])
+        #expect(try commands(data) == ["\(abs) agent-hook codex"])
+    }
+
+    @Test func codexMessageOnlyWhenWritten() throws {
+        let h = try Home()
+        try FileManager.default.createDirectory(at: h.home.appending(path: ".codex"), withIntermediateDirectories: true)
+        let note = "codex: approve the new headroom hooks when Codex asks you to trust them"
+        let (_, first, _) = h.install(agents: true)
+        #expect(first.contains(note))
+        let (_, second, _) = h.install(agents: true)
+        #expect(!second.contains(note))
     }
 
     @Test func installedFileIsLeftByteIdentical() throws {
