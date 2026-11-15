@@ -472,10 +472,11 @@ private let releaseBinary: URL? = {
         defer { try? FileManager.default.removeItem(at: dir) }
         var writer = try LiveStateWriter(url: Paths(root: dir).liveState)
 
-        // A stale snapshot returns before stdin; a fresh one with no trigger also decodes stdin and classifies.
+        // A stale snapshot skips the JSON decode; a fresh one with no trigger also decodes stdin and classifies.
+        // `pretoolSnapshot` stamps `pretoolNow - age`, so `-offset` lands on the real clock.
         let offset = Date().timeIntervalSince1970 - Self.pretoolNow
         for (label, snapshot) in [
-            ("stale", pretoolSnapshot(age: offset + 3600, pressure: 4)), ("fresh, no trigger", pretoolSnapshot(age: offset)),
+            ("stale", pretoolSnapshot(age: -offset + 3600, pressure: 4)), ("fresh, no trigger", pretoolSnapshot(age: -offset)),
         ] {
             let written = writer.write(snapshot)
             #expect(written)
