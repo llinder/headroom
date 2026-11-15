@@ -89,11 +89,13 @@ private func wallNow() -> Double { Date().timeIntervalSince1970 }
     private let day = 86_400.0
 
     @Test func passRunsOnlyWhileAgentsOrPressureNeedIt() {
-        #expect(LeftoverMonitor.shouldPass(first: true, liveAgentRuns: 0, pressure: .normal), "the first pass always runs")
-        #expect(!LeftoverMonitor.shouldPass(first: false, liveAgentRuns: 0, pressure: .normal))
-        #expect(LeftoverMonitor.shouldPass(first: false, liveAgentRuns: 1, pressure: .normal))
-        #expect(LeftoverMonitor.shouldPass(first: false, liveAgentRuns: 0, pressure: .warn))
-        #expect(LeftoverMonitor.shouldPass(first: false, liveAgentRuns: 0, pressure: .critical))
+        #expect(LeftoverMonitor.shouldPass(first: true, liveAgentRuns: 0, pressure: .normal, flagged: 0), "the first pass always runs")
+        #expect(!LeftoverMonitor.shouldPass(first: false, liveAgentRuns: 0, pressure: .normal, flagged: 0))
+        #expect(LeftoverMonitor.shouldPass(first: false, liveAgentRuns: 1, pressure: .normal, flagged: 0))
+        #expect(LeftoverMonitor.shouldPass(first: false, liveAgentRuns: 0, pressure: .warn, flagged: 0))
+        #expect(LeftoverMonitor.shouldPass(first: false, liveAgentRuns: 0, pressure: .critical, flagged: 0))
+        #expect(LeftoverMonitor.shouldPass(first: false, liveAgentRuns: 0, pressure: .normal, flagged: 1),
+                "a flagged container keeps the VM awake anyway, and a removed one must clear")
     }
 
     @Test func flagsUnownedAfter24hAndEmitsEvent() throws {

@@ -155,7 +155,7 @@ Paths are resolved through symlinks and deduplicated, keeping the first context 
 - The pass runs on its own serial background queue.
 - It has a 10 s overall deadline, at most 20 inspect or stats calls per pass, and 2 s per request.
 - Results return to the main actor. Sampling never waits.
-- A scheduled pass runs only while an agent run is live or memory pressure is not normal. The first pass after the recorder starts always runs.
+- A scheduled pass runs only while an agent run is live, memory pressure is not normal, or anything is flagged (a flagged container keeps the VM awake anyway, and a removed one then clears). The first pass after the recorder starts always runs.
 - `status` shows the engines found and when the last pass ran, or `docker no engines found · last checked Nm ago` when a pass found none. It also lists the hook events installed, such as `agent hooks: SessionStart, PreToolUse`, and hints `run headroom install --agents` when `PreToolUse` is missing.
 - A refused connection or a missing socket clears that engine's items. A timeout keeps them for at most 3 passes.
 
@@ -287,4 +287,4 @@ The `DOCKER_HOST` engine (context `env`) has no Docker context, so its commands 
 
 **Leftover pass and idle Docker VMs.**
 - Whether a 5-minute poll keeps an idle OrbStack or Docker Desktop VM awake was not measured.
-- The conservative fallback is in place instead: a scheduled pass runs only while an agent run is live or memory pressure is not normal, and the first pass after start always runs. With no agent running and normal pressure, the sidecar keeps the last pass's result, and `status` shows when that was.
+- The conservative fallback is in place instead: a scheduled pass runs only while an agent run is live, memory pressure is not normal, or anything is flagged, and the first pass after start always runs. With none of those, nothing is flagged and the sidecar keeps the last pass's result; `status` shows when that was.

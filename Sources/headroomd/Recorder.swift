@@ -209,7 +209,8 @@ final class Recorder {
         if tickCount % Self.scanEvery == 0 { scanDiagnostics(now: now) }
         if tickCount % Self.pruneEvery == 0 { pruneThrottles(now: now) }
         if tickCount % Self.leftoverEvery == Self.leftoverFirstTick,
-            LeftoverMonitor.shouldPass(first: !leftoverPassStarted, liveAgentRuns: liveAgentRuns, pressure: pressure)
+            LeftoverMonitor.shouldPass(
+                first: !leftoverPassStarted, liveAgentRuns: liveAgentRuns, pressure: pressure, flagged: leftovers.items.count)
         {
             startLeftoverPass(now: now)
         }
