@@ -49,6 +49,41 @@ struct LeftoverItemsTests {
         #expect(r.reapers == ["s9"])
     }
 
+    @Test func registryQualifiedAndGoReaperIgnores() {
+        let cs = [
+            c("a", "reg", image: "docker.io/library/registry:3"),
+            c("b", "buildx_buildkit_x0", image: "sha256:abcdef0123456789"),
+            c("d", "bk", image: "mirror.example/moby/buildkit:v1"),
+            c("e", "ry", image: "testcontainers/ryuk:0.5"),
+            c("f", "ry2", image: "mirror.example/testcontainers/ryuk:0.5"),
+            c("r", "reaper_abc123", labels: ["org.testcontainers": "true", "org.testcontainers.sessionId": "s7"]),
+        ]
+        let r = LeftoverGrouper.group(cs, engine: "e", ignore: IgnoreRules())
+        #expect(r.items.isEmpty)
+        #expect(r.reapers == ["s7"])
+    }
+
+    @Test func lifetimeEdgeCases() {
+        #expect(Lifetime(label: "08h") == .duration(28800))
+        for bad in ["1.5h", " 7d ", "7D", "+5h", "-5h", "99999999999999999999d", ""] {
+            #expect(Lifetime(label: bad) == nil, "\(bad)")
+        }
+    }
+
+    @Test func cleanupIsShellSafe() {
+        let nasty = ["$(rm)", "a`b`", "line\nbreak", "-rf"]
+        let cs = nasty.map { c("id-" + $0, $0, labels: ["com.docker.compose.project": $0]) }
+        let items = LeftoverGrouper.group(cs, engine: "e", ignore: IgnoreRules()).items
+        for (item, name) in zip(items, nasty) {
+            #expect(item.cleanup == ["docker --context 'e' compose -p '\(name)' down"])
+        }
+        let singles = nasty.map { c("i" + $0, $0) }
+        for item in LeftoverGrouper.group(singles, engine: "e", ignore: IgnoreRules()).items {
+            #expect(item.cleanup[0].hasPrefix("docker --context 'e' rm -f 'i"))
+            #expect(item.cleanup[0].hasSuffix("'"))
+        }
+    }
+
     @Test func configIgnoreByImageAndLabel() {
         let cs = [
             c("a", "one", image: "corp/tool:1"),

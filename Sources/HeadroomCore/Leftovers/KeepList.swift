@@ -18,6 +18,19 @@ public struct KeepList: Codable, Sendable, Equatable {
         self.entries = entries
     }
 
+    private struct LossyEntry: Decodable {
+        let entry: KeepEntry?
+        init(from decoder: any Decoder) throws {
+            entry = try? KeepEntry(from: decoder)
+        }
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let lossy = try c.decodeIfPresent([LossyEntry].self, forKey: .entries) ?? []
+        entries = lossy.compactMap(\.entry)
+    }
+
     public static func load(from url: URL) -> (KeepList, warning: String?) {
         guard FileManager.default.fileExists(atPath: url.path) else { return (KeepList(), nil) }
         do {
@@ -29,13 +42,7 @@ public struct KeepList: Codable, Sendable, Equatable {
 
     public func save(to url: URL) throws {
         let data = try JSONEncoder().encode(self)
-        let tmp = url.deletingLastPathComponent().appending(path: ".\(url.lastPathComponent).tmp")
-        try data.write(to: tmp)
-        if FileManager.default.fileExists(atPath: url.path) {
-            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
-        } else {
-            try FileManager.default.moveItem(at: tmp, to: url)
-        }
+        try data.write(to: url, options: .atomic)
     }
 
     public func covers(_ item: LeftoverItem, now: Double) -> Bool {

@@ -19,7 +19,7 @@ public struct DockerContainer: Decodable, Sendable, Equatable {
         self.state = state
     }
 
-    public init(from decoder: Decoder) throws {
+    public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         names = (try c.decodeIfPresent([String].self, forKey: .names) ?? []).map {

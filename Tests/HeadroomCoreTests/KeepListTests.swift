@@ -52,6 +52,18 @@ struct KeepListTests {
         #expect(none == nil)
     }
 
+    @Test func lenientDecode() throws {
+        let url = try tempDir().appending(path: "keeps.json")
+        try Data("{}".utf8).write(to: url)
+        let (empty, w1) = KeepList.load(from: url)
+        #expect(empty.entries.isEmpty)
+        #expect(w1 == nil)
+        try Data(#"{"entries":[{"name":"a"},{"nope":1},{"name":"b","until":9}]}"#.utf8).write(to: url)
+        let (list, w2) = KeepList.load(from: url)
+        #expect(list.entries == [KeepEntry(name: "a"), KeepEntry(name: "b", until: 9)])
+        #expect(w2 == nil)
+    }
+
     @Test func keepSaveIsAtomic() throws {
         let dir = try tempDir()
         let url = dir.appending(path: "keeps.json")

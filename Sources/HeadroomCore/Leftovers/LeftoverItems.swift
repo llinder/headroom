@@ -17,7 +17,10 @@ public enum Lifetime: Codable, Sendable, Equatable {
         case "keep": self = .keep
         case "temporary": self = .temporary
         default:
-            guard let unit = label.last, let n = Int(label.dropLast()), n > 0 else { return nil }
+            let digits = label.dropLast()
+            // Int("+5") parses, so require plain ASCII digits.
+            guard let unit = label.last, !digits.isEmpty, digits.allSatisfy({ $0 >= "0" && $0 <= "9" }),
+                  let n = Int(digits), n > 0 else { return nil }
             switch unit {
             case "m": self = .duration(Double(n) * 60)
             case "h": self = .duration(Double(n) * 3600)
@@ -85,8 +88,11 @@ public enum LeftoverGrouper {
     private static let tcSessionLabel = "org.testcontainers.sessionId"
 
     private static let builtIn = IgnoreRules(
-        names: ["buildx_buildkit*", "testcontainers-ryuk*", "kind-registry"],
-        images: ["moby/buildkit*", "registry:*"],
+        names: ["buildx_buildkit*", "testcontainers-ryuk*", "reaper_*", "kind-registry"],
+        images: [
+            "moby/buildkit*", "*/moby/buildkit*", "registry:*", "*/registry:*",
+            "testcontainers/ryuk*", "*/testcontainers/ryuk*",
+        ],
         labels: ["io.kubernetes.pod.name", "org.testcontainers.reuse.enable=true"]
     )
 
@@ -105,7 +111,7 @@ public enum LeftoverGrouper {
         var buckets: [String: Bucket] = [:]
 
         for c in containers where c.state == "running" {
-            if c.names.contains(where: { $0.hasPrefix("testcontainers-ryuk") }),
+            if c.names.contains(where: { $0.hasPrefix("testcontainers-ryuk") || $0.hasPrefix("reaper_") }),
                let session = c.labels[tcSessionLabel] {
                 reapers.insert(session)
             }
