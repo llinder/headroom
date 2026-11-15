@@ -214,6 +214,16 @@ public enum PDFReport {
             "Thermal slowdowns (serious or worse): \(a.thermalSlowdowns). Apps closed by macOS to free memory: \(a.events["jetsam"] ?? 0). "
                 + "Apps that stopped responding: \(a.events["hang"] ?? 0).", body)
 
+        if let advice = Appendix.adviceSentence(a.agentWarnings) { c.text(advice, body, after: 2) }
+        // Under 0.1 GB the figure would round to "0.0 GB", so it is given in whole megabytes; under 1 MB there is nothing to say.
+        let peakMB = (a.leftoverPeakGB * 1000).rounded()
+        if a.leftoverPeakGB >= 0.1 {
+            c.text("Abandoned containers held up to \(Wording.decimal(a.leftoverPeakGB, places: 1)) GB at their peak.", body, after: 2)
+        } else if peakMB >= 1 {
+            c.text("Abandoned containers held up to \(Wording.decimal(peakMB, places: 0)) MB at their peak.", body, after: 2)
+        }
+        c.space(4)
+
         c.text("Method and thresholds", bodyBold, after: 3)
         for line in a.thresholds { c.text("• " + line, body, after: 2) }
         c.text(a.workdayDefinition, body, after: 2)

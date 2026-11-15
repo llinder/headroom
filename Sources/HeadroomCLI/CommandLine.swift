@@ -18,8 +18,14 @@ public enum Command: Equatable {
     case uninstall
     case statusline(format: String?, color: Bool, quiet: Bool)
     case agentHook(tool: String)
+    case agentPretool(tool: String)
     case hookZsh
     case recordCommand(exe: String, seconds: Double)
+    case leftovers(json: Bool, kept: Bool)
+    case keep(name: String, forSeconds: Double?)
+    case unkeep(name: String)
+    case keeps
+    case mcp
     case version
     case help
 }
@@ -33,9 +39,15 @@ let usageText = """
       report [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--machine ID] [--out FILE]
       install [--agents]         install the LaunchAgent (and agent hooks)
       uninstall                  remove the LaunchAgent
+      leftovers [--json] [--kept] containers left running after their work ended
+      keep <name> [--for 8h|7d]  stop flagging a leftover
+      unkeep <name>              flag it again
+      keeps                      list keep-list entries
       statusline [--format FMT] [--no-color] [--quiet]
       agent-hook <tool>          hook entry point for agent tools
+      agent-hook pretool <tool>  pre-command advice hook for agent tools
       hook zsh                   print the zsh preexec/precmd snippet
+      mcp                        read-only MCP server on stdio, for agents
       record-command <exe> <seconds>
       version
       help
@@ -56,6 +68,9 @@ public func parse(_ args: [String]) throws(UsageError) -> Command {
     case "uninstall":
         try expectNoArguments(rest, for: name)
         return .uninstall
+    case "mcp":
+        try expectNoArguments(rest, for: name)
+        return .mcp
     case "version", "--version":
         try expectNoArguments(rest, for: name)
         return .version
@@ -79,7 +94,30 @@ public func parse(_ args: [String]) throws(UsageError) -> Command {
         return .install(agents: agents)
     case "statusline":
         return try parseStatusline(rest)
+    case "leftovers":
+        var json = false
+        var kept = false
+        for arg in rest {
+            switch arg {
+            case "--json": json = true
+            case "--kept": kept = true
+            default: throw unknown(arg, for: name)
+            }
+        }
+        return .leftovers(json: json, kept: kept)
+    case "keep":
+        return try parseKeep(rest)
+    case "unkeep":
+        guard rest.count == 1, let target = rest.first, !target.hasPrefix("-") else {
+            throw UsageError("unkeep needs exactly one name")
+        }
+        return .unkeep(name: target)
+    case "keeps":
+        try expectNoArguments(rest, for: name)
+        return .keeps
     case "agent-hook":
+        // A missing tool exits 0 silently, as an old binary does: hooks must never fail the agent.
+        if rest.first == "pretool", rest.count <= 2 { return .agentPretool(tool: rest.count == 2 ? rest[1] : "") }
         guard rest.count == 1, let tool = rest.first, !tool.hasPrefix("--") else {
             throw UsageError("agent-hook needs exactly one tool name")
         }
@@ -125,6 +163,32 @@ private func parseReport(_ args: [String]) throws(UsageError) -> Command {
         index += 2
     }
     return .report(since: since, until: until, machine: machine, out: out)
+}
+
+private func parseKeep(_ args: [String]) throws(UsageError) -> Command {
+    var name: String?
+    var seconds: Double?
+    var index = 0
+    while index < args.count {
+        let arg = args[index]
+        if arg == "--for" {
+            guard index + 1 < args.count else { throw UsageError("--for needs a value") }
+            guard case let .duration(value)? = Lifetime(label: args[index + 1]) else {
+                throw UsageError("--for needs a duration such as 30m, 8h or 7d")
+            }
+            seconds = value
+            index += 1
+        } else if arg.hasPrefix("-") {
+            throw unknown(arg, for: "keep")
+        } else if name == nil {
+            name = arg
+        } else {
+            throw unknown(arg, for: "keep")
+        }
+        index += 1
+    }
+    guard let name else { throw UsageError("keep needs a name") }
+    return .keep(name: name, forSeconds: seconds)
 }
 
 private func parseStatusline(_ args: [String]) throws(UsageError) -> Command {
@@ -182,6 +246,14 @@ func run(_ args: [String], out: (String) -> Void, err: (String) -> Void) -> Int3
         return Status.run(paths: .standard(), now: Date())
     case let .tag(text):
         return Tag.run(text: text, paths: .standard(), now: Date(), out: out, err: err)
+    case let .leftovers(json, kept):
+        return Leftovers.run(paths: .standard(), now: Date(), json: json, kept: kept, out: out)
+    case let .keep(name, forSeconds):
+        return Leftovers.keep(name: name, forSeconds: forSeconds, paths: .standard(), now: Date(), out: out, err: err)
+    case let .unkeep(name):
+        return Leftovers.unkeep(name: name, paths: .standard(), out: out, err: err)
+    case .keeps:
+        return Leftovers.keeps(paths: .standard(), now: Date(), out: out, err: err)
     case .version:
         out("headroom \(HeadroomVersion.current)")
         return 0
@@ -196,16 +268,25 @@ func run(_ args: [String], out: (String) -> Void, err: (String) -> Void) -> Int3
         return Install.run(
             agents: agents, home: FileManager.default.homeDirectoryForCurrentUser,
             sourceDir: executable.resolvingSymlinksInPath().deletingLastPathComponent(), uid: getuid(), now: Date(),
-            launchctl: Install.launchctl, out: out, err: err)
+            launchctl: Install.launchctl, runner: Install.runProcess, find: Install.which, out: out, err: err)
     case .uninstall:
         return Install.uninstall(
             home: FileManager.default.homeDirectoryForCurrentUser, dataDirectory: Paths.standard().root, uid: getuid(),
-            now: Date(), launchctl: Install.launchctl, out: out, err: err)
+            now: Date(), launchctl: Install.launchctl, runner: Install.runProcess, find: Install.which, out: out,
+            err: err)
     case let .statusline(format, color, quiet):
         out(StatusLine.render(template: format ?? StatusLineFormatter.defaultTemplate, color: color, quiet: quiet))
         return 0
     case let .agentHook(tool):
         return AgentHook.run(tool: tool)
+    case let .agentPretool(tool):
+        return AgentHook.runPretool(tool: tool)
+    case .mcp:
+        // A client that exits mid-reply must end the server through a failed write, not SIGPIPE.
+        signal(SIGPIPE, SIG_IGN)
+        MCPServer(paths: .standard(), now: { Date().timeIntervalSince1970 })
+            .serve(input: .standardInput, output: .standardOutput)
+        return 0
     case .hookZsh:
         out(ShellHook.zshSnippet)
         return 0

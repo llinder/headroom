@@ -38,7 +38,52 @@ private func run(_ tool: AgentTool, pid: Int32, minutes: Double, cpu: Double, ac
         footprint: 2 * gib, diskWriteBytes: 0)
 }
 
+private func leftover(_ name: String, kind: LeftoverKind = .compose, memory: UInt64? = 2_400_000_000, minutes: Double = 125) -> FlaggedItem {
+    FlaggedItem(
+        item: LeftoverItem(
+            key: "docker/\(name)", engine: "docker", kind: kind, name: name, containerIDs: ["abc"], sessionId: nil, lifetime: nil,
+            cleanup: ["docker rm -f abc"]),
+        startedAt: now - minutes * 60, reason: "no owner", memoryBytes: memory, firstFlagged: now - minutes * 60)
+}
+
 @Suite struct TopRendererTests {
+    @Test func headerShowsLeftoverMarker() {
+        var s = state()
+        #expect(!TopRenderer.render(s, width: 90, height: 40)[0].contains("⚑"))
+        s.leftovers = [leftover("shop"), leftover("dev", kind: .kind)]
+        let line = TopRenderer.render(s, width: 90, height: 40)[0]
+        #expect(line.hasSuffix("recording ● 41d, 0 gaps · ⚑ 2"))
+        #expect(TopRenderer.displayWidth(line) == 90)
+    }
+
+    @Test func leftoversPaneRows() throws {
+        var s = state()
+        s.leftovers = [leftover("shop"), leftover("dev", kind: .kind, memory: nil, minutes: 30)]
+        #expect(!TopRenderer.render(s, width: 100, height: 40).contains { $0.contains("leftovers (") })
+        s.showLeftovers = true
+        let lines = TopRenderer.render(s, width: 100, height: 40)
+        let at = try #require(lines.firstIndex { $0.contains("── leftovers (2)") })
+        #expect(lines[at + 1].contains("compose") && lines[at + 1].contains("shop") && lines[at + 1].contains("no owner"))
+        #expect(lines[at + 1].contains("2.4 GB") && lines[at + 1].hasSuffix("2h5m"))
+        #expect(lines[at + 2].contains("kind") && lines[at + 2].contains("unknown") && lines[at + 2].hasSuffix("30m"))
+        #expect(!lines.contains { $0.contains("docker rm") })
+    }
+
+    @Test func leftoversPaneFitsWidth() {
+        var s = state()
+        s.leftovers = [leftover("a-remarkably-long-compose-project-name-for-testing")]
+        s.showLeftovers = true
+        for width in [20, 40, 80] {
+            for line in TopRenderer.render(s, width: width, height: 40) {
+                #expect(TopRenderer.displayWidth(line) <= width)
+            }
+        }
+        let wide = TopRenderer.render(s, width: 80, height: 40).first { $0.contains("compose") }
+        #expect(wide?.contains("no owner") == true && wide?.contains("2.4 GB") == true && wide?.hasSuffix("2h5m") == true)
+        let narrow = TopRenderer.render(s, width: 40, height: 40).first { $0.contains("compose") }
+        #expect(narrow?.contains("2.4 GB") == true && narrow?.hasSuffix("2h5m") == true)
+    }
+
     @Test func headerLine() {
         let line = TopRenderer.render(state(), width: 90, height: 40)[0]
         #expect(line.hasPrefix(" headroom ── M3 · 8 cores · 16 GB · 512 GB"))
@@ -153,7 +198,7 @@ private func run(_ tool: AgentTool, pid: Int32, minutes: Double, cpu: Double, ac
             #expect(!lines.isEmpty)
             #expect(lines.allSatisfy { TopRenderer.displayWidth($0) <= 100 })
         }
-        #expect(TopRenderer.render(s, width: 100, height: 40).contains { $0.contains("9999h") })
+        #expect(TopRenderer.render(s, width: 100, height: 40).contains { $0.contains("416d15h") })
     }
 
     @Test func startedConvertsMicrosecondsToSeconds() {

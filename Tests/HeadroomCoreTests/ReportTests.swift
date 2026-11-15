@@ -275,6 +275,111 @@ private func fullText(_ doc: PDFDocument) -> String {
         #expect(m.appendix.agentCPUHours == 1)
     }
 
+    @Test func appendixAdviceAndLeftoverLines() throws {
+        let f = try ReportFixture()
+        func appendixText() throws -> String {
+            let doc = try f.render(try f.model(baseline: nil))
+            return text(doc.page(at: doc.pageCount - 1))
+        }
+        let quiet = try appendixText()
+        #expect(!quiet.contains("advised to narrow work"))
+        #expect(!quiet.contains("Abandoned containers"))
+
+        let id = thisMachine.machineId
+        for ts in [at(4, 9), at(4, 10)] {
+            try f.exec("INSERT INTO events VALUES('\(id)', \(ts), 'agent_warning', '{}')")
+        }
+        try f.exec(#"INSERT INTO events VALUES('\#(id)', \#(at(5, 9)), 'leftover', '{"kind":"compose","ref":"aa","bytes":"1500000000","totalBytes":"1500000000"}')"#)
+        try f.exec(#"INSERT INTO events VALUES('\#(id)', \#(at(5, 10)), 'leftover', '{"kind":"kind","ref":"bb","bytes":"1000000000","totalBytes":"2500000000"}')"#)
+        try f.exec(#"INSERT INTO events VALUES('\#(id)', \#(at(5, 11)), 'leftover_cleared', '{"kind":"kind","ref":"bb","bytes":"1000000000","totalBytes":"1500000000"}')"#)
+        try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 12)), 'leftover', 'not json')")
+        let m = try f.model(baseline: nil)
+        #expect(m.appendix.agentWarnings == ["critical": 2])
+        let loud = try appendixText()
+        #expect(loud.contains("Agents were advised to narrow work 2 times while memory was critical."))
+        #expect(!loud.contains("times:"))
+        #expect(loud.contains("Abandoned containers held up to 2.5 GB at their peak."))
+
+        let queries = Queries(db: f.db)
+        let from = Date(timeIntervalSince1970: Double(at(5, 11)))
+        let to = Date(timeIntervalSince1970: Double(at(5, 12)))
+        // The clear at `from` is inside the range, so the 2.5 GB held until then seeds the peak.
+        #expect(try queries.leftoverPeakBytes(machineId: id, from: from, to: to) == 2_500_000_000)
+        let other = oldMachine.machineId
+        let payload = #"{"kind":"compose","ref":"zz","bytes":"1","totalBytes":"9000000000"}"#
+        try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 12)), 'leftover', '\(payload)')")
+        try f.exec("INSERT INTO events VALUES('\(other)', \(at(5, 11)), 'leftover', '\(payload)')")
+        try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 12)), 'agent_warning', '{}')")
+        try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 11)), 'agent_warning', '{}')")
+        try f.exec("INSERT INTO events VALUES('\(other)', \(at(5, 11)), 'agent_warning', '{}')")
+        #expect(try queries.leftoverPeakBytes(machineId: id, from: from, to: to) == 2_500_000_000)
+        #expect(try queries.agentWarningCounts(machineId: id, from: from, to: to) == ["critical": 1])
+        #expect(try queries.leftoverPeakBytes(machineId: id, from: to.addingTimeInterval(86_400), to: to.addingTimeInterval(172_800))
+            == 9_000_000_000, "still held from before the range")
+        #expect(try queries.leftoverPeakBytes(machineId: id, from: Date(timeIntervalSince1970: 0), to: Date(timeIntervalSince1970: 1)) == nil)
+    }
+
+    @Test func agentWarningCountsByTrigger() throws {
+        let f = try ReportFixture()
+        let id = thisMachine.machineId
+        let rows = [
+            "{}", #"{"trigger":"critical"}"#, #"{"trigger":"swapGrowing"}"#, #"{"trigger":"swapGrowing"}"#,
+            #"{"trigger":"swapGrowing"}"#, #"{"trigger":"leftovers"}"#,
+        ]
+        for (i, payload) in rows.enumerated() {
+            try f.exec("INSERT INTO events VALUES('\(id)', \(at(4, 9) + Int64(i)), 'agent_warning', '\(payload)')")
+        }
+        let from = Date(timeIntervalSince1970: Double(at(4, 0)))
+        let to = Date(timeIntervalSince1970: Double(at(5, 0)))
+        #expect(try Queries(db: f.db).agentWarningCounts(machineId: id, from: from, to: to)
+            == ["critical": 2, "swapGrowing": 3, "leftovers": 1])
+
+        let doc = try f.render(try f.model(baseline: nil))
+        #expect(text(doc.page(at: doc.pageCount - 1)).contains(
+            "Agents were advised to narrow work 6 times: 2 while memory was critical, 3 while swap was growing, 1 because abandoned containers held memory."))
+    }
+
+    @Test func adviceSentenceListsOnlyNonZeroParts() {
+        #expect(Appendix.adviceSentence([:]) == nil)
+        #expect(Appendix.adviceSentence(["critical": 0]) == nil)
+        #expect(Appendix.adviceSentence(["swapGrowing": 1])
+            == "Agents were advised to narrow work 1 time while swap was growing.")
+        #expect(Appendix.adviceSentence(["leftovers": 2])
+            == "Agents were advised to narrow work 2 times because abandoned containers held memory.")
+        #expect(Appendix.adviceSentence(["critical": 1, "leftovers": 1, "swapGrowing": 0])
+            == "Agents were advised to narrow work 2 times: 1 while memory was critical, 1 because abandoned containers held memory.")
+    }
+
+    @Test func smallLeftoverPeakReadsInMegabytes() throws {
+        let f = try ReportFixture()
+        let id = thisMachine.machineId
+        func peakLine(_ total: Int) throws -> String {
+            try f.exec("DELETE FROM events WHERE kind='leftover'")
+            try f.exec(#"INSERT INTO events VALUES('\#(id)', \#(at(5, 9)), 'leftover', '{"kind":"kind","ref":"aa","bytes":"1","totalBytes":"\#(total)"}')"#)
+            let doc = try f.render(try f.model(baseline: nil))
+            return text(doc.page(at: doc.pageCount - 1))
+        }
+        let small = try peakLine(40_000_000)
+        #expect(small.contains("Abandoned containers held up to 40 MB at their peak."))
+        #expect(!small.contains("0.0 GB"))
+        #expect(!(try peakLine(100_000)).contains("Abandoned containers"))
+    }
+
+    @Test func privacyNoContainerNamesInPDF() throws {
+        let f = try ReportFixture()
+        let id = thisMachine.machineId
+        try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 9)), 'agent_warning', '{}')")
+        try f.exec(#"INSERT INTO events VALUES('\#(id)', \#(at(5, 9)), 'leftover', '{"kind":"compose","ref":"aa","bytes":"1500000000","totalBytes":"1500000000"}')"#)
+        let item = LeftoverItem(
+            key: "docker/compose:zebra-checkout-svc", engine: "docker", kind: .compose, name: "zebra-checkout-svc",
+            containerIDs: ["abc"], sessionId: nil, lifetime: nil, cleanup: [], containerNames: ["zebra-checkout-svc-web-1"])
+        try LeftoverState(items: [FlaggedItem(item: item, startedAt: 0, reason: "no owner", memoryBytes: 1_500_000_000, firstFlagged: 0)])
+            .save(to: f.paths.leftovers)
+        let all = fullText(try f.render(try f.model(baseline: baseline)))
+        #expect(all.contains("Abandoned containers held up to 1.5 GB"))
+        #expect(!all.contains("zebra"))
+    }
+
     @Test func growthMeasuredOnceForVerdictAndSpec() throws {
         let f = try ReportFixture(days: 5, secondMachine: false)
         let m = try f.model(baseline: nil)

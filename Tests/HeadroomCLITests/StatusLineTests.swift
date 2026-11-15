@@ -9,12 +9,12 @@ private let now = 1_800_000_000.0
 
 private func snapshot(
     timestamp: Double = now, mem: Double = 0.82, swap: UInt64 = 14 * (1 << 30), cpu: Float = 0.71,
-    pressure: UInt8 = 2, agents: UInt16 = 3
+    pressure: UInt8 = 2, agents: UInt16 = 3, leftovers: UInt16 = 0, leftoverBytes: UInt64 = 0
 ) -> LiveSnapshot {
     LiveSnapshot(
         timestamp: timestamp, cpuBusy: cpu, memUsed: UInt64(mem * 1000), memTotal: 1000, swapUsed: swap,
         diskFree: 583_000_000_000, diskCapacity: 1_000_000_000_000, pressure: pressure, thermal: 0, limitFlags: 0,
-        activeAgents: agents, idleAgents: 0)
+        activeAgents: agents, idleAgents: 0, leftoverCount: leftovers, leftoverBytes: leftoverBytes)
 }
 
 private func render(_ s: LiveSnapshot?, color: Bool = false, quiet: Bool = false, template: String = StatusLineFormatter.defaultTemplate) -> String {
@@ -132,5 +132,26 @@ private let binary: URL? = {
         let median = times[times.count / 2]
         print("statusline median wall time: \(median) ms (\(exe.path))")
         #expect(median < 5)
+    }
+
+    @Test func leftoversTokenSingularPlural() {
+        #expect(render(snapshot(leftovers: 1, leftoverBytes: 1_250_000_000), template: "{leftovers}") == "⚑ 1 leftover · 1.3 GB")
+        #expect(render(snapshot(leftovers: 3, leftoverBytes: 0), template: "{leftovers}") == "⚑ 3 leftovers")
+        #expect(render(snapshot(leftovers: 1, leftoverBytes: 0), template: "{leftovers}") == "⚑ 1 leftover",
+                "memory not read yet is left out, not shown as 0.0 GB")
+    }
+
+    @Test func leftoversTokenClampsHugeBytes() {
+        #expect(!render(snapshot(leftovers: 2, leftoverBytes: .max), template: "{leftovers}").isEmpty)
+    }
+
+    @Test func emptyWhenNone() {
+        #expect(render(snapshot(), template: "{leftovers}") == "")
+        #expect(render(snapshot(), template: "{cpu} · {leftovers}") == "cpu 71%")
+    }
+
+    @Test func defaultTemplateIncludesLeftovers() {
+        #expect(render(snapshot(leftovers: 2, leftoverBytes: 4_000_000_000))
+            == "mem 82% ⚠ swap 14G · cpu 71% · disk 417G · 3 agents · ⚑ 2 leftovers · 4.0 GB")
     }
 }

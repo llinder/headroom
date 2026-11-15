@@ -2,7 +2,7 @@ import Foundation
 import HeadroomCore
 
 public enum StatusLineFormatter {
-    public static let defaultTemplate = "{mem} {swap} · {cpu} · {disk} · {agents}"
+    public static let defaultTemplate = "{mem} {swap} · {cpu} · {disk} · {agents} · {leftovers}"
     static let staleAfter = 60.0
 
     // Integer math and interpolation only: this runs on every status-line refresh, so
@@ -22,6 +22,14 @@ public enum StatusLineFormatter {
         let disk = "disk \(roundedInt(Double(usedDisk) / 1e9, upTo: 1e9))G"
         let agents = s.activeAgents == 1 ? "1 agent" : "\(s.activeAgents) agents"
 
+        var leftovers = ""
+        if s.leftoverCount > 0 {
+            let tenths = roundedInt(Double(s.leftoverBytes) / 1e8, upTo: 1e12)
+            leftovers = "⚑ \(s.leftoverCount) leftover\(s.leftoverCount == 1 ? "" : "s")"
+            // Memory is read a pass after the flag, so zero usually means not read yet; "0.0 GB" would claim it's empty.
+            if tenths > 0 { leftovers += " · \(tenths / 10).\(tenths % 10) GB" }
+        }
+
         // Substituting per segment means an empty token drops its whole segment instead of
         // leaving a dangling separator.
         return template.components(separatedBy: " · ")
@@ -32,6 +40,7 @@ public enum StatusLineFormatter {
                     .replacingOccurrences(of: "{cpu}", with: cpu)
                     .replacingOccurrences(of: "{disk}", with: disk)
                     .replacingOccurrences(of: "{agents}", with: agents)
+                    .replacingOccurrences(of: "{leftovers}", with: leftovers)
                     .split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
             }
             .filter { !$0.isEmpty }

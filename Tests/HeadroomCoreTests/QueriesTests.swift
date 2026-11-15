@@ -55,6 +55,139 @@ private final class Fixture {
 }
 
 @Suite struct QueriesTests {
+    @Test func containerIntentsInRange() throws {
+        let f = try Fixture()
+        try f.db.exec("""
+            INSERT INTO events VALUES('m1', \(at(0, 3)), 'container_intent', '{"rootPid":"30","rootStart":"3000","start":"true"}');
+            INSERT INTO events VALUES('m1', \(at(0, 1)), 'container_intent', '{"rootPid":"10","rootStart":"1000"}');
+            INSERT INTO events VALUES('m1', \(at(0, 2)), 'container_intent', '{"rootPid":"bad"}');
+            INSERT INTO events VALUES('m1', \(at(0, 5)), 'container_intent', '{"rootPid":"50","rootStart":"5000"}');
+            """)
+        let got = try Queries(db: f.db).containerIntents(machineId: "m1", from: Double(at(0, 0)), to: Double(at(0, 4)))
+        #expect(got.map(\.ts) == [Double(at(0, 1)), Double(at(0, 3))])
+        #expect(got.map(\.root) == [ProcessKey(pid: 10, start: 1000), ProcessKey(pid: 30, start: 3000)])
+        #expect(got.map(\.start) == [false, true])
+    }
+
+    @Test func ownershipFactsFromSeededDB() throws {
+        let f = try Fixture()
+        let since = Double(at(38, 23, 50)), now = Double(at(40, 0))
+        try f.db.exec("""
+            INSERT INTO agent_runs VALUES(1, 'm1', 'claude', 10, 1000, \(at(5, 0)), NULL);
+            INSERT INTO agent_runs VALUES(2, 'm1', 'codex', 20, 2000, \(at(38, 0)), \(at(38, 23, 55)));
+            INSERT INTO agent_runs VALUES(3, 'm1', 'claude', 30, 3000, \(at(30, 0)), \(at(38, 0)));
+            INSERT INTO agent_runs VALUES(4, 'm2', 'claude', 40, 4000, \(at(39, 0)), NULL);
+            INSERT INTO agent_run_sessions VALUES(1, 's1', NULL, 0);
+            INSERT INTO agent_run_sessions VALUES(1, 's2', NULL, 0);
+            INSERT INTO run_usage VALUES(1, \(at(39, 1)), 1, 0, 0, 30);
+            INSERT INTO run_usage VALUES(1, \(at(39, 2)), 1, 0, 0, 0);
+            INSERT INTO run_usage VALUES(1, \(at(39, 3)), 1, 0, 0, 5);
+            INSERT INTO run_usage VALUES(1, \(at(20, 0)), 1, 0, 0, 60);
+            INSERT INTO run_usage VALUES(2, \(at(38, 23, 50)), 1, 0, 0, 60);
+            INSERT INTO events VALUES('m1', \(at(38, 23, 55)), 'container_intent', '{"rootPid":"10","rootStart":"1000"}');
+            INSERT INTO events VALUES('m1', \(at(39, 4)), 'container_intent', '{"rootPid":"10","rootStart":"1000"}');
+            INSERT INTO events VALUES('m1', \(at(38, 23, 40)), 'container_intent', '{"rootPid":"20","rootStart":"2000"}');
+            """)
+        for k in 0..<180 { try f.db.exec("INSERT INTO samples(machine_id, ts) VALUES('m1', \(at(39, 23) + Int64(k) * 10))") }
+        try f.db.exec("INSERT INTO samples(machine_id, ts) VALUES('m2', \(at(39, 23, 1)))")
+
+        let q = Queries(db: f.db)
+        let facts = try q.ownershipFacts(machineId: machine, since: since, now: now, idleThreshold: 3600)
+
+        #expect(facts.intents.map(\.ts) == [Double(at(38, 23, 55)), Double(at(39, 4))])
+        let one = ProcessKey(pid: 10, start: 1000), two = ProcessKey(pid: 20, start: 2000)
+        #expect(Set(facts.runs.keys) == [one, two])
+        #expect(facts.runs[one] == RunFacts(
+            sessionIds: ["s1", "s2"], started: Double(at(5, 0)), ended: nil, lastIntent: Double(at(39, 4)),
+            activeMinutes: [Double(at(39, 1)), Double(at(39, 3))]))
+        #expect(facts.runs[two] == RunFacts(
+            sessionIds: [], started: Double(at(38, 0)), ended: Double(at(38, 23, 55)), lastIntent: nil,
+            activeMinutes: [Double(at(38, 23, 50))]))
+
+        #expect(facts.awakeSeconds(Double(at(39, 23)), now) == 1800)
+        #expect(facts.awakeSeconds(Double(at(39, 23, 10)), now) == 1200)
+        #expect(facts.awakeSeconds(Double(at(39, 23)) + 5, Double(at(39, 23)) + 25) == 20)
+        #expect(facts.awakeSeconds(Double(at(5, 0)), now) == 1800)
+        #expect(facts.awakeSeconds(now, now) == 0)
+
+        // 61 samples cover 600 s, so anything starting before the oldest of them is reported as the threshold.
+        let bounded = try q.ownershipFacts(machineId: machine, since: since, now: now, idleThreshold: 600)
+        #expect(bounded.awakeSeconds(Double(at(39, 23)), now) == 600)
+        #expect(bounded.awakeSeconds(Double(at(5, 0)), now) == 600)
+        #expect(bounded.awakeSeconds(Double(at(39, 23, 25)), now) == 300)
+        #expect(bounded.awakeSeconds(Double(at(39, 23, 19)) + 50, now) == 610)
+    }
+
+    @Test func ownershipFactsSurviveAHugeIdleThreshold() throws {
+        let f = try Fixture()
+        let now = Double(at(40, 0))
+        for k in 0..<3 { try f.db.exec("INSERT INTO samples(machine_id, ts) VALUES('m1', \(at(39, 23) + Int64(k) * 10))") }
+        let facts = try Queries(db: f.db).ownershipFacts(
+            machineId: machine, since: now - 600, now: now, idleThreshold: Double(Int.max) * 60)
+        #expect(facts.awakeSeconds(Double(at(39, 23)), now) == 30)
+    }
+
+    @Test func leftoverPeakIncludesBytesEventsAndSeedsFromBeforeTheRange() throws {
+        let f = try Fixture()
+        try f.db.exec("""
+            INSERT INTO events VALUES('m1', \(at(0, 1)), 'leftover', '{"kind":"compose","ref":"a","bytes":"0","totalBytes":"0","totalCount":"1"}');
+            INSERT INTO events VALUES('m1', \(at(0, 2)), 'leftover_bytes', '{"totalBytes":"4000000000","totalCount":"1"}');
+            INSERT INTO events VALUES('m1', \(at(0, 3)), 'leftover', 'not json');
+            INSERT INTO events VALUES('m1', \(at(1, 5)), 'leftover_cleared', '{"kind":"compose","ref":"a","bytes":"4000000000","totalBytes":"0","totalCount":"0"}');
+            """)
+        let q = Queries(db: f.db)
+        #expect(try q.leftoverPeakBytes(machineId: machine, from: date(at(0, 0)), to: date(at(0, 23))) == 4_000_000_000,
+                "memory learned on a later pass reaches the peak")
+        #expect(try q.leftoverPeakBytes(machineId: machine, from: date(at(1, 0)), to: date(at(1, 4))) == 4_000_000_000,
+                "a container still held from before the range counts")
+        #expect(try q.leftoverPeakBytes(machineId: machine, from: date(at(1, 0)), to: date(at(1, 6))) == 4_000_000_000)
+        #expect(try q.leftoverPeakBytes(machineId: machine, from: date(at(2, 0)), to: date(at(2, 6))) == 0)
+        #expect(try q.leftoverPeakBytes(machineId: machine, from: date(at(-1, 0)), to: date(at(0, 0))) == nil)
+    }
+
+    @Test func leftoverCountPrefersTotalCount() throws {
+        let f = try Fixture()
+        // A sidecar rebuilt from scratch flagged the same item twice; the running sum would say 2.
+        try f.db.exec("""
+            INSERT INTO events VALUES('m1', \(at(0, 1)), 'leftover', '{"kind":"compose","ref":"a","bytes":"5","totalBytes":"5","totalCount":"1"}');
+            INSERT INTO events VALUES('m1', \(at(0, 2)), 'leftover', '{"kind":"compose","ref":"a","bytes":"5","totalBytes":"5","totalCount":"1"}');
+            INSERT INTO events VALUES('m1', \(at(0, 3)), 'leftover_bytes', '{"totalBytes":"9","totalCount":"1"}');
+            """)
+        let q = Queries(db: f.db)
+        #expect(try q.leftoversBefore(machineId: machine, before: Double(at(0, 2, 30))) == (count: 1, bytes: 5))
+        #expect(try q.leftoversBefore(machineId: machine, before: Double(at(0, 4))) == (count: 1, bytes: 9))
+
+        // Rows from before totalCount fall back to the running sum, which a bytes event doesn't move.
+        let old = try Fixture()
+        try old.db.exec("""
+            INSERT INTO events VALUES('m1', \(at(0, 1)), 'leftover', '{"kind":"compose","ref":"a","bytes":"5","totalBytes":"5"}');
+            INSERT INTO events VALUES('m1', \(at(0, 2)), 'leftover', '{"kind":"kind","ref":"b","bytes":"5","totalBytes":"10"}');
+            INSERT INTO events VALUES('m1', \(at(0, 3)), 'leftover_cleared', '{"kind":"kind","ref":"b","bytes":"5","totalBytes":"5"}');
+            """)
+        #expect(try Queries(db: old.db).leftoversBefore(machineId: machine, before: Double(at(0, 4))) == (count: 1, bytes: 5))
+    }
+
+    @Test func ownershipNeedsSinceBeforeTheIntentWindow() throws {
+        let f = try Fixture()
+        let startedAt = Double(at(39, 12)), now = startedAt + 7200
+        try f.db.exec("""
+            INSERT INTO agent_runs VALUES(1, 'm1', 'claude', 10, 1000, \(at(39, 0)), \(at(39, 12, 2)));
+            INSERT INTO events VALUES('m1', \(at(39, 12) - 30), 'container_intent', '{"rootPid":"10","rootStart":"1000","start":"true"}');
+            """)
+        let item = LeftoverItem(
+            key: "e/container/c", engine: "e", kind: .container, name: "c", containerIDs: ["c"], sessionId: nil,
+            lifetime: nil, cleanup: [])
+        func decide(since: Double) throws -> LeftoverDecision {
+            let facts = try Queries(db: f.db).ownershipFacts(machineId: machine, since: since, now: now, idleThreshold: 3600)
+            return LeftoverPolicy.decide(
+                item, startedAt: startedAt, facts: facts, keeps: KeepList(), liveReapers: [], goneReapers: [],
+                now: now, config: LeftoversConfig())
+        }
+        #expect(try decide(since: startedAt - 600) == .leftover(reason: "the agent session that started it is done"))
+        // A `since` after the start drops the owner's marker, so the item falls to the unowned rule.
+        #expect(try decide(since: startedAt + 60) == .notYet)
+    }
+
     @Test func queriesDailyMetric() throws {
         let f = try Fixture()
         for (hour, max) in [(1, 0.5), (2, 0.9), (3, 0.7)] {
@@ -230,5 +363,33 @@ private final class Fixture {
         #expect(stats[1].max == 25)
         #expect(limits["2026-11-01"]?[.heavySwap] == 25)
         #expect(limits["2026-11-02"]?[.heavySwap] == 1)
+    }
+
+    /// Any Double a caller passes must bind, never trap: the MCP server hands these bounds straight from its input.
+    @Test func nonFiniteAndHugeBoundsDoNotTrap() throws {
+        let f = try Fixture()
+        try f.rollup(60, at(0, 1), .cpuBusy, avg: 0.5, max: 0.9, p95: 0.8)
+        let q = Queries(db: f.db)
+        for (from, to) in [(-Double.infinity, Double.infinity), (Double.nan, Double.nan), (-1e300, 1e300)] {
+            let all = try q.metricSeries(machineId: machine, metric: .cpuBusy, resolution: 60, from: from, to: to, limit: 10)
+            #expect(all.count == (from.isNaN ? 0 : 1))
+            _ = try q.metricPeak(machineId: machine, metric: .cpuBusy, resolution: 60, from: from, to: to)
+            _ = try q.limitSeconds(machineId: machine, resolution: 60, from: from, to: to)
+            _ = try q.maxPressure(machineId: machine, from: from, to: to)
+            _ = try q.topProcesses(machineId: machine, from: from, to: to)
+            _ = try q.agentRunActivity(machineId: machine, from: from, to: to, limit: 5)
+            _ = try q.events(machineId: machine, from: from, to: to, limit: 5)
+            _ = try q.leftoversBefore(machineId: machine, before: to)
+            _ = try q.containerIntents(machineId: machine, from: from, to: to)
+            _ = try q.groupTotals(
+                machineId: machine, from: Date(timeIntervalSince1970: from), to: Date(timeIntervalSince1970: to))
+            _ = try q.leftoverPeakBytes(
+                machineId: machine, from: Date(timeIntervalSince1970: from), to: Date(timeIntervalSince1970: to))
+            _ = try q.thermalSlowdowns(
+                machineId: machine, from: Date(timeIntervalSince1970: from), to: Date(timeIntervalSince1970: to))
+            _ = try q.limitSecondsByDay(
+                machineId: machine, from: Date(timeIntervalSince1970: from), to: Date(timeIntervalSince1970: to),
+                calendar: utc())
+        }
     }
 }

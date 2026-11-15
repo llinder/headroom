@@ -93,7 +93,7 @@ private func tempDir() throws -> URL {
         let home = try tempDir()
         defer { try? FileManager.default.removeItem(at: home) }
         try FileManager.default.createDirectory(at: home.appending(path: ".claude"), withIntermediateDirectories: true)
-        try "{\"hooks\": \"headroom agent-hook claude\"}".write(
+        try #"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/b/headroom agent-hook claude"}]}]}}"#.write(
             to: home.appending(path: ".claude/settings.json"), atomically: true, encoding: .utf8)
 
         let out = try Status.render(queries: Queries(db: db), paths: paths, machineId: id, now: now, home: home)
@@ -104,11 +104,44 @@ private func tempDir() throws -> URL {
         #expect(out.contains("coverage 99.0% of awake time · gaps 0"))
         #expect(out.contains("database "))
         #expect(out.contains("headroomd CPU 0.1% · memory 8.0 MB"))
-        #expect(out.contains("agent hooks installed"))
+        #expect(out.contains("agent hooks: SessionStart · PreToolUse missing, run headroom install --agents"))
 
         try db.exec("UPDATE meta SET value='1' WHERE key='heartbeat'")
         let stale = try Status.render(queries: Queries(db: db), paths: paths, machineId: id, now: now, home: dir)
         #expect(stale.hasPrefix("not recording ○"))
-        #expect(stale.contains("agent hooks not installed"))
+        #expect(stale.contains("agent hooks: none · run headroom install --agents"))
+    }
+
+    @Test func versionIsBumpedForPhaseOnePointFive() {
+        var out: [String] = []
+        #expect(HeadroomCLI.run(["headroom", "--version"], out: { out.append($0) }, err: { _ in }) == 0)
+        #expect(out == ["headroom 0.2.0"])
+    }
+
+    @Test func parseLeftoversAndKeep() throws {
+        #expect(try parse(["headroom", "leftovers"]) == .leftovers(json: false, kept: false))
+        #expect(try parse(["headroom", "leftovers", "--json", "--kept"]) == .leftovers(json: true, kept: true))
+        #expect(try parse(["headroom", "keep", "kind:dev"]) == .keep(name: "kind:dev", forSeconds: nil))
+        #expect(try parse(["headroom", "keep", "kind:dev", "--for", "8h"]) == .keep(name: "kind:dev", forSeconds: 28_800))
+        #expect(try parse(["headroom", "keep", "--for", "7d", "x"]) == .keep(name: "x", forSeconds: 604_800))
+        #expect(try parse(["headroom", "unkeep", "x"]) == .unkeep(name: "x"))
+        #expect(try parse(["headroom", "keeps"]) == .keeps)
+    }
+
+    @Test func keepWithBadDurationIsUsageError() {
+        for bad in ["keep", "temporary", "0h", "soon"] {
+            #expect(throws: UsageError.self) { try parse(["headroom", "keep", "x", "--for", bad]) }
+        }
+        #expect(throws: UsageError.self) { try parse(["headroom", "keep"]) }
+        #expect(throws: UsageError.self) { try parse(["headroom", "keep", "x", "--for"]) }
+        #expect(throws: UsageError.self) { try parse(["headroom", "unkeep"]) }
+        #expect(throws: UsageError.self) { try parse(["headroom", "keeps", "x"]) }
+        #expect(throws: UsageError.self) { try parse(["headroom", "leftovers", "--nope"]) }
+    }
+
+    @Test func parseMCP() throws {
+        #expect(try parse(["headroom", "mcp"]) == .mcp)
+        #expect(throws: UsageError.self) { try parse(["headroom", "mcp", "--stdio"]) }
+        #expect(usageText.contains("  mcp "))
     }
 }

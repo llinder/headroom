@@ -102,6 +102,73 @@ private let sample = LiveSnapshot(
         try handle.close()
         #expect(LiveStateReader.read(url: url) == nil)
     }
+
+    @Test func roundTripNewFields() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var writer = try LiveStateWriter(url: url)
+        var s = sample
+        s.leftoverCount = 4
+        s.leftoverBytes = 3_500_000_000
+        s.swapGrowthBytesPerMin = -250_000_000
+        writer.write(s)
+        #expect(LiveStateReader.read(url: url) == s)
+        s.swapGrowthBytesPerMin = 900_000_000
+        writer.write(s)
+        #expect(LiveStateReader.read(url: url)?.swapGrowthBytesPerMin == 900_000_000)
+    }
+
+    @Test func phase1FileReadsZeroForNewFields() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        var writer = try LiveStateWriter(url: url)
+        var s = sample
+        s.leftoverCount = 4
+        s.leftoverBytes = 3_500_000_000
+        s.swapGrowthBytesPerMin = 7
+        writer.write(s)
+        var bytes = [UInt8](try Data(contentsOf: url))
+        for i in 76..<96 { bytes[i] = 0 }
+        try Data(bytes).write(to: url)
+        #expect(bytes.count == 128)
+        let read = try #require(LiveStateReader.read(url: url))
+        #expect(read.leftoverCount == 0)
+        #expect(read.leftoverBytes == 0)
+        #expect(read.swapGrowthBytesPerMin == 0)
+        #expect(read.memUsed == sample.memUsed)
+    }
+
+    @Test func swapGrowthUsesSampleFromAMinuteAgo() {
+        var growth = SwapGrowth()
+        let gb: UInt64 = 1_000_000_000
+        var last: Int64 = -1
+        for i in 0...7 { last = growth.record(swapUsed: UInt64(i) * gb, at: Double(i) * 10) }
+        #expect(last == 6 * Int64(gb))
+    }
+
+    @Test func swapGrowthZeroUntilAMinuteOfHistory() {
+        var growth = SwapGrowth()
+        for i in 0...5 {
+            #expect(growth.record(swapUsed: UInt64(i) * 1_000_000_000, at: Double(i) * 10) == 0)
+        }
+    }
+
+    @Test func staleReferenceAfterSleepIsIgnored() {
+        var growth = SwapGrowth()
+        let gb: UInt64 = 1_000_000_000
+        for i in 0...6 { _ = growth.record(swapUsed: UInt64(i) * gb, at: Double(i) * 10) }
+        #expect(growth.record(swapUsed: 50 * gb, at: 36_000) == 0)
+        for i in 1...5 {
+            #expect(growth.record(swapUsed: 50 * gb, at: 36_000 + Double(i) * 10) == 0)
+        }
+    }
+
+    @Test func growthIsNormalisedToAMinute() {
+        var growth = SwapGrowth()
+        let gb: UInt64 = 1_000_000_000
+        _ = growth.record(swapUsed: 0, at: 0)
+        #expect(growth.record(swapUsed: 7 * gb, at: 70) == 6 * Int64(gb))
+    }
 }
 
 @Suite(.serialized) struct LiveStateSpeedTests {

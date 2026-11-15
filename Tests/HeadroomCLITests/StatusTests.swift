@@ -87,4 +87,48 @@ private final class Fixture {
         #expect(out.isEmpty)
         #expect(errors.count == 1 && errors[0].hasPrefix("database unreadable: "))
     }
+
+    @Test func noEnginesAfterAPass() throws {
+        let f = try Fixture()
+        try LeftoverState(updated: now.timeIntervalSince1970 - 120).save(to: f.paths.leftovers)
+        let out = try f.render()
+        #expect(out.contains("docker no engines found · last checked 2m ago"))
+        #expect(!out.contains("not checked yet"))
+    }
+
+    @Test func agentHookEventsAreListed() throws {
+        let f = try Fixture()
+        #expect(try f.render().contains("agent hooks: none · run headroom install --agents"))
+
+        let claude = f.home.appending(path: ".claude")
+        try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+        let session = #"{"hooks":[{"type":"command","command":"/b/headroom agent-hook claude"}]}"#
+        let pretool = #"{"matcher":"Bash","hooks":[{"type":"command","command":"/b/headroom agent-hook pretool claude"}]}"#
+        try Data(#"{"hooks":{"SessionStart":[\#(session)]}}"#.utf8).write(to: claude.appending(path: "settings.json"))
+        #expect(try f.render().contains("agent hooks: SessionStart · PreToolUse missing, run headroom install --agents"))
+
+        try Data(#"{"hooks":{"SessionStart":[\#(session)],"PreToolUse":[\#(pretool)]}}"#.utf8)
+            .write(to: claude.appending(path: "settings.json"))
+        let out = try f.render()
+        #expect(out.hasSuffix("agent hooks: SessionStart, PreToolUse"))
+    }
+
+    @Test func statusShowsEngines() throws {
+        let f = try Fixture()
+        #expect(try f.render().contains("docker not checked yet"))
+
+        let state = LeftoverState(
+            updated: now.timeIntervalSince1970,
+            engines: [
+                EngineStatus(context: "desktop-linux", socket: "/s", lastPass: now.timeIntervalSince1970 - 180, ok: true, failures: 0),
+                EngineStatus(context: "colima", socket: "/c", lastPass: now.timeIntervalSince1970 - 3600, ok: false, failures: 4),
+            ],
+            keepWarning: "keeps.json: 1 entry could not be read and was ignored")
+        try state.save(to: f.paths.leftovers)
+        let out = try f.render()
+        #expect(out.contains("docker desktop-linux ok · last checked 3m ago"))
+        #expect(out.contains("docker colima unreachable · last checked 60m ago"))
+        #expect(out.contains("keep list: keeps.json: 1 entry could not be read and was ignored"))
+        #expect(!out.contains("not checked yet"))
+    }
 }

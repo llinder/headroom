@@ -17,6 +17,8 @@ struct TopState {
     var recorderRunning: Bool
     var showProcesses: Bool
     var showAgents: Bool
+    var leftovers: [FlaggedItem] = []
+    var showLeftovers = false
     /// Agent ages are measured against this, which keeps `render` a pure function of its input.
     var now: Double = Date().timeIntervalSince1970
 }
@@ -47,6 +49,7 @@ enum TopRenderer {
         var lines = [header(s, width: width), cpuRow(s), memoryRow(s), swapRow(s), diskRow(s)]
         lines += s.showProcesses ? processPane(s, width: width) : groupPane(s, width: width)
         if s.showAgents { lines += agentPane(s, width: width) }
+        if s.showLeftovers { lines += leftoversPane(s, width: width) }
         return lines.prefix(max(0, height)).map { fit($0, width) }
     }
 
@@ -72,7 +75,8 @@ enum TopRenderer {
         let ram = clampedInt((Double(s.machine.ramBytes) / gib).rounded())
         let disk = clampedInt((Double(s.machine.diskBytes) / gb).rounded())
         let left = " headroom ── \(name) · \(s.machine.perfCores + s.machine.effCores) cores · \(ram) GB · \(disk) GB "
-        let right = s.recorderRunning ? "recording ● \(s.recordingDays)d, \(s.gapCount) gaps" : "not recording ○"
+        var right = s.recorderRunning ? "recording ● \(s.recordingDays)d, \(s.gapCount) gaps" : "not recording ○"
+        if !s.leftovers.isEmpty { right += " · ⚑ \(s.leftovers.count)" }
         let fill = max(1, width - displayWidth(left) - displayWidth(right) - 1)
         return left + String(repeating: "─", count: fill) + " " + right
     }
@@ -157,8 +161,31 @@ enum TopRenderer {
         return [ruled("agents (\(s.agents.count))", tail: "age ── CPU ── Mem ──", width: width)] + rows
     }
 
-    private static func age(_ seconds: Double) -> String {
+    /// Kind, name, reason, memory and age. The name is the only column that gives way, since `fit` trims from the right.
+    private static func leftoversPane(_ s: TopState, width: Int) -> [String] {
+        // Fixed columns are 1 + kind 15 + memory 9 + age 7; the reason goes first when the name would drop under 8.
+        let withReason = width - 48 >= 8
+        let nameWidth = withReason ? width - 48 : max(8, width - 32)
+        let rows = s.leftovers.map { flagged -> String in
+            " " + pad(flagged.item.kind.rawValue, 15) + pad(flagged.item.name, nameWidth)
+                + (withReason ? pad(flagged.reason, 16) : "") + rpad(flagged.memoryBytes.map(memoryText) ?? "unknown", 9)
+                + rpad(age(s.now - flagged.startedAt), 7)
+        }
+        return [ruled("leftovers (\(s.leftovers.count))", tail: "memory ── age ──", width: width)] + rows
+    }
+
+    /// Decimal units, as the rest of `top` and the report use for memory shown to people.
+    static func memoryText(_ bytes: UInt64) -> String {
+        guard bytes >= 1_000_000_000 else { return "\(bytes / 1_000_000) MB" }
+        let tenths = clampedInt((Double(bytes) / 1e8).rounded(), upTo: 1e12)
+        return "\(tenths / 10).\(tenths % 10) GB"
+    }
+
+    /// Compact elapsed time shared by `top` and `leftovers`: `42m`, `2h1m`, `3d4h`.
+    static func age(_ seconds: Double) -> String {
         let minutes = clampedInt(seconds / 60, upTo: 9999 * 60)
-        return minutes < 60 ? "\(minutes)m" : "\(minutes / 60)h\(minutes % 60)m"
+        if minutes < 60 { return "\(minutes)m" }
+        let hours = minutes / 60
+        return hours < 24 ? "\(hours)h\(minutes % 60)m" : "\(hours / 24)d\(hours % 24)h"
     }
 }

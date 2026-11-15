@@ -9,6 +9,7 @@ import HeadroomCore
 final class TopSession {
     private static let historyLength = 60
     private static let dbRefreshInterval = 30.0
+    private static let leftoverRefreshInterval = 10.0
     private static let heartbeatFreshness = 90.0
     private static let spaceRefreshEvery = 60
     private static let growthWindowDays = 14
@@ -28,9 +29,12 @@ final class TopSession {
     private var latest: Tick?
     private var stored = Stored()
     private var lastDBRead = -Double.infinity
+    private var lastLeftoverRead = -Double.infinity
+    private var leftovers: [FlaggedItem] = []
     private var ticks = 0
     var showProcesses = false
     var showAgents = true
+    var showLeftovers = false
 
     init(paths: Paths) {
         self.paths = paths
@@ -56,6 +60,10 @@ final class TopSession {
             lastDBRead = ts
             stored = readStored(now: now)
         }
+        if ts - lastLeftoverRead >= Self.leftoverRefreshInterval {
+            lastLeftoverRead = ts
+            leftovers = LeftoverState.load(from: paths.leftovers).items
+        }
     }
 
     func state() -> TopState? {
@@ -74,7 +82,7 @@ final class TopSession {
             },
             today: stored.today, recordingDays: stored.recordingDays, gapCount: stored.gapCount,
             recorderRunning: stored.recorderRunning, showProcesses: showProcesses, showAgents: showAgents,
-            now: tick.ts)
+            leftovers: leftovers, showLeftovers: showLeftovers, now: tick.ts)
     }
 
     nonisolated static func startedSeconds(microseconds: UInt64) -> Double { Double(microseconds) / 1_000_000 }
@@ -214,6 +222,7 @@ enum TopCommand {
                     case UInt8(ascii: "q"), 3: finish(0)
                     case UInt8(ascii: "g"): session.showProcesses.toggle()
                     case UInt8(ascii: "a"): session.showAgents.toggle()
+                    case UInt8(ascii: "l"): session.showLeftovers.toggle()
                     default: break
                     }
                 }

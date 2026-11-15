@@ -27,6 +27,43 @@ private func makeSpool() throws -> (Spool, URL) {
         #expect(spool.drain().records.isEmpty)
     }
 
+    @Test func newRecordsRoundTrip() throws {
+        let (spool, dir) = try makeSpool()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let records: [SpoolRecord] = [
+            .agentWarning(ts: 5, trigger: .swapGrowing),
+            .agentWarning(ts: 5.5, trigger: nil),
+            .containerIntent(ts: 6, rootPid: 77, rootStart: 1_700_000_000_000_000, start: false),
+            .containerIntent(ts: 7, rootPid: 77, rootStart: 1_700_000_000_000_000, start: true),
+        ]
+        for r in records { #expect(spool.append(r)) }
+        _ = spool.drain()
+        let result = spool.drain()
+        #expect(result.records == records)
+        #expect(result.malformed == 0)
+    }
+
+    @Test func agentWarningWithoutTriggerStillDecodes() throws {
+        let decoded = try JSONDecoder().decode(SpoolRecord.self, from: Data(#"{"ts":5,"type":"agentWarning"}"#.utf8))
+        #expect(decoded == .agentWarning(ts: 5, trigger: nil))
+        let leftovers = try JSONDecoder().decode(
+            SpoolRecord.self, from: Data(#"{"trigger":"leftovers","ts":5,"type":"agentWarning"}"#.utf8))
+        #expect(leftovers == .agentWarning(ts: 5, trigger: .leftovers))
+        let intent = try JSONDecoder().decode(
+            SpoolRecord.self, from: Data(#"{"rootPid":7,"rootStart":8,"ts":5,"type":"containerIntent"}"#.utf8))
+        #expect(intent == .containerIntent(ts: 5, rootPid: 7, rootStart: 8, start: false))
+    }
+
+    @Test func phase1RecorderSkipsNewRecords() throws {
+        let (spool, dir) = try makeSpool()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try (#"{"type":"futureRecord","ts":1}"# + "\n").write(to: spool.url, atomically: true, encoding: .utf8)
+        _ = spool.drain()
+        let result = spool.drain()
+        #expect(result.records.isEmpty)
+        #expect(result.malformed == 1)
+    }
+
     @Test func malformedLinesSkipped() throws {
         let (spool, dir) = try makeSpool()
         defer { try? FileManager.default.removeItem(at: dir) }

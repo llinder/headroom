@@ -9,22 +9,34 @@ final class Recorder {
     private static let flushEvery = 6
     private static let spaceRefreshEvery = 6
     private static let scanEvery = 30
+    private static let pruneEvery = 360
+    private static let throttleMaxAge = 86_400.0
     private static let hour: Int64 = 3600
     private static let maxCatchUpHours: Int64 = 48
     // Rescans overlap the previous scan a little so a report written as a scan runs isn't missed;
     // the scanner drops the files it already returned.
     private static let scanOverlap = 300.0
     private static let maxCoverageDays = 31
+    private static let leftoverEvery = 30
+    // The first leftover pass runs about 30 s after start instead of waiting a full interval.
+    private static let leftoverFirstTick = 3
+    private static let leftoverBudget = 10.0
 
     private let log = Logger(subsystem: "io.github.llinder.headroom", category: "recorder")
     private let store: SampleStore
     private let machineId: String
     private let spool: Spool
+    private let pretool: URL
+    private let paths: Paths
+    private let leftoverMonitor: LeftoverMonitor
+    private let leftoverQueue = DispatchQueue(label: "io.github.llinder.headroom.leftovers")
+    private let leftoverIdleThreshold: Double
     private let readMeta: Statement
     private let writeMeta: Statement
     private let timebase: mach_timebase_info_data_t
     private let clock = SuspendingClock()
     private var liveState: LiveStateWriter
+    private var swapGrowth = SwapGrowth()
     private var pipeline: SamplingPipeline
     private var scanner: DiagnosticScanner
     private var power: PowerMonitor?
@@ -44,6 +56,12 @@ final class Recorder {
     private var lastRolledHour: Int64?
     private var lastLiveWarning = -Double.infinity
     private var lastDrainWarning = -Double.infinity
+    private var leftovers: LeftoverState
+    private var leftoverPassRunning = false
+    private var leftoverPassStarted = false
+    // The latest sampled values the leftover gate reads; a tick that couldn't be sampled keeps the previous ones.
+    private var liveAgentRuns = 0
+    private var pressure = PressureLevel.normal
 
     init(paths: Paths) throws {
         try paths.ensureRoot()
@@ -60,6 +78,14 @@ final class Recorder {
         machineId = machine.machineId
         store = try SampleStore(db: db, machineId: machine.machineId, interval: Self.interval)
         spool = Spool(url: paths.spool)
+        pretool = paths.pretool
+        self.paths = paths
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let environment = ProcessInfo.processInfo.environment
+        leftoverMonitor = LeftoverMonitor(
+            machineId: machine.machineId, engines: { DockerEngines.discover(home: home, environment: environment) }, config: config.leftovers)
+        leftoverIdleThreshold = Double(config.leftovers.afterMinutes) * 60
+        leftovers = LeftoverState.load(from: paths.leftovers)
         liveState = try LiveStateWriter(url: paths.liveState)
         readMeta = try db.prepare("SELECT value FROM meta WHERE key=?")
         writeMeta = try db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)")
@@ -116,6 +142,7 @@ final class Recorder {
         if !power.start() { log.error("sleep/wake notifications unavailable; asleep time will not be recorded") }
         self.power = power
 
+        pruneThrottles(now: now)
         pipeline.discard()
         _ = readSelfUsage()
         lastSample = clock.now
@@ -165,6 +192,8 @@ final class Recorder {
             let result = pipeline.sample(
                 now: now, interval: elapsed, refreshSpace: tickCount % Self.spaceRefreshEvery == 0, thermal: level)
             sampled = result.tick
+            liveAgentRuns = result.agents.live.count
+            if let tick = result.tick { pressure = tick.memory.pressure }
             // The tracker has already forgotten these runs, so no later tick would report their end.
             if sampled == nil { store.recordRunsEnded(result.agents.ended, ts: now) }
         }
@@ -178,6 +207,53 @@ final class Recorder {
 
         if tickCount % Self.flushEvery == 0 { flushCycle(now: now) }
         if tickCount % Self.scanEvery == 0 { scanDiagnostics(now: now) }
+        if tickCount % Self.pruneEvery == 0 { pruneThrottles(now: now) }
+        if tickCount % Self.leftoverEvery == Self.leftoverFirstTick,
+            LeftoverMonitor.shouldPass(
+                first: !leftoverPassStarted, liveAgentRuns: liveAgentRuns, pressure: pressure, flagged: leftovers.items.count)
+        {
+            startLeftoverPass(now: now)
+        }
+    }
+
+    /// Docker calls can take seconds, so the pass runs off the main queue and sampling never waits for it. It reads
+    /// ownership through its own read-only connection; the store's connection belongs to the main actor.
+    private func startLeftoverPass(now: Double) {
+        guard !leftoverPassRunning else { return }
+        leftoverPassRunning = true
+        leftoverPassStarted = true
+        let monitor = leftoverMonitor
+        let previous = leftovers
+        let paths = self.paths
+        let machineId = self.machineId
+        let idleThreshold = leftoverIdleThreshold
+        let deadline = Date().timeIntervalSince1970 + Self.leftoverBudget
+        leftoverQueue.async {
+            let (keeps, keepWarning) = KeepList.load(from: paths.keeps)
+            let result = monitor.pass(
+                previous: previous,
+                facts: { since in
+                    guard let db = try? Database(path: paths.database.path, readOnly: true) else { return nil }
+                    return try? Queries(db: db).ownershipFacts(
+                        machineId: machineId, since: since, now: now, idleThreshold: idleThreshold)
+                },
+                keeps: keeps, keepWarning: keepWarning, now: now, deadline: deadline)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self.finishLeftoverPass(state: result.state, events: result.events, now: now) }
+            }
+        }
+    }
+
+    private func finishLeftoverPass(state: LeftoverState, events: [LeftoverEvent], now: Double) {
+        leftoverPassRunning = false
+        if let warning = state.keepWarning, warning != leftovers.keepWarning { log.warning("keep list: \(warning)") }
+        leftovers = state
+        do {
+            try state.save(to: paths.leftovers)
+        } catch {
+            log.error("saving leftovers failed: \(String(describing: error), privacy: .public)")
+        }
+        for event in events { store.recordEvent(kind: event.kind, ts: now, payload: event.payload) }
     }
 
     private func handlePower(_ event: PowerEvent) {
@@ -277,6 +353,11 @@ final class Recorder {
         nextScanSince = Date(timeIntervalSince1970: now - Self.scanOverlap)
     }
 
+    /// The advice hook leaves one throttle file per agent session, so without this they would pile up forever.
+    private func pruneThrottles(now: Double) {
+        _ = FilePrune.pruneOldFiles(in: pretool, now: now, maxAge: Self.throttleMaxAge)
+    }
+
     private func writeLiveState(_ tick: Tick) {
         let snapshot = LiveSnapshot(
             timestamp: tick.ts, cpuBusy: Float(1 - tick.cpu.idle),
@@ -284,7 +365,9 @@ final class Recorder {
             diskFree: tick.disk.free, diskCapacity: tick.disk.capacity,
             pressure: UInt8(tick.memory.pressure.rawValue), thermal: UInt8(tick.thermal.rawValue),
             limitFlags: tick.flags.rawValue,
-            activeAgents: UInt16(clamping: tick.agents.activeCount), idleAgents: UInt16(clamping: tick.agents.idleCount))
+            activeAgents: UInt16(clamping: tick.agents.activeCount), idleAgents: UInt16(clamping: tick.agents.idleCount),
+            leftoverCount: UInt16(clamping: leftovers.items.count), leftoverBytes: leftovers.totalBytes,
+            swapGrowthBytesPerMin: swapGrowth.record(swapUsed: tick.memory.swapUsed, at: tick.ts))
         guard !liveState.write(snapshot), tick.ts - lastLiveWarning >= Double(Self.hour) else { return }
         lastLiveWarning = tick.ts
         log.error("live state write failed")

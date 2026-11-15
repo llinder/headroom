@@ -23,8 +23,19 @@ public struct Paths: Sendable {
     public var config: URL { root.appending(path: "config.json") }
     public var tiers: URL { root.appending(path: "tiers.json") }
     public var baseline: URL { root.appending(path: "baseline.json") }
+    public var leftovers: URL { root.appending(path: "leftovers.json") }
+    public var keeps: URL { root.appending(path: "keeps.json") }
+    public var pretool: URL { root.appending(path: "pretool", directoryHint: .isDirectory) }
 
+    /// The root holds container and project names (`leftovers.json`, `keeps.json`), so it is the user's alone; an
+    /// older install's looser directory is tightened. A symlinked root is left as it is: chmod follows the link, and
+    /// the target is a location the user chose, whose mode isn't headroom's to change.
     public func ensureRoot() throws {
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let fm = FileManager.default
+        try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let attributes = try fm.attributesOfItem(atPath: root.path)
+        guard attributes[.type] as? FileAttributeType == .typeDirectory else { return }
+        let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        if mode & 0o077 != 0 { try fm.setAttributes([.posixPermissions: mode & 0o700], ofItemAtPath: root.path) }
     }
 }

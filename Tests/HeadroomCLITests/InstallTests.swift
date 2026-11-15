@@ -15,9 +15,9 @@ private func object(_ data: Data) throws -> [String: Any] {
     try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
 }
 
-private func commands(_ data: Data) throws -> [String] {
+private func commands(_ data: Data, event: String = "SessionStart") throws -> [String] {
     let hooks = try #require(try object(data)["hooks"] as? [String: Any])
-    let groups = try #require(hooks["SessionStart"] as? [[String: Any]])
+    let groups = try #require(hooks[event] as? [[String: Any]])
     return groups.flatMap { ($0["hooks"] as? [[String: Any]] ?? []).compactMap { $0["command"] as? String } }
 }
 
@@ -36,7 +36,7 @@ private func commands(_ data: Data) throws -> [String] {
     }
 
     @Test func mergePreservesExisting() throws {
-        let out = try HookConfig.merged(Data(existing.utf8), command: ours)
+        let out = try HookConfig.merged(Data(existing.utf8), event: "SessionStart", matcher: nil, command: ours)
         let root = try object(out)
         #expect(root["statusLine"] != nil)
         #expect(root["permissions"] != nil)
@@ -44,36 +44,36 @@ private func commands(_ data: Data) throws -> [String] {
     }
 
     @Test func mergeIdempotent() throws {
-        let once = try HookConfig.merged(Data(existing.utf8), command: ours)
-        let twice = try HookConfig.merged(once, command: ours)
+        let once = try HookConfig.merged(Data(existing.utf8), event: "SessionStart", matcher: nil, command: ours)
+        let twice = try HookConfig.merged(once, event: "SessionStart", matcher: nil, command: ours)
         #expect(try commands(twice).filter { $0.contains("headroom agent-hook") }.count == 1)
         #expect(once == twice)
-        #expect(HookConfig.contains(twice))
+        #expect(HookConfig.contains(twice, event: "SessionStart"))
     }
 
     @Test func mergeWithMarkerReturnsTheOriginalBytes() throws {
         let installed = Data(
             #"{ "zeta": 1, "hooks": {"SessionStart": [{"hooks": [{"command": "\#(ours)", "type": "command"}]}]}, "alpha": "a/b" }"#
                 .utf8)
-        #expect(try HookConfig.merged(installed, command: ours) == installed)
+        #expect(try HookConfig.merged(installed, event: "SessionStart", matcher: nil, command: ours) == installed)
     }
 
     @Test func removeOnlyOurs() throws {
-        let merged = try HookConfig.merged(Data(existing.utf8), command: ours)
+        let merged = try HookConfig.merged(Data(existing.utf8), event: "SessionStart", matcher: nil, command: ours)
         let out = try HookConfig.removed(merged)
         #expect(try commands(out) == ["bash herdr-agent-state.sh session"])
-        #expect(!HookConfig.contains(out))
+        #expect(!HookConfig.contains(out, event: "SessionStart"))
     }
 
     @Test func removeDropsEmptiedKeys() throws {
-        let merged = try HookConfig.merged(Data(#"{"model":"m"}"#.utf8), command: ours)
+        let merged = try HookConfig.merged(Data(#"{"model":"m"}"#.utf8), event: "SessionStart", matcher: nil, command: ours)
         let out = try object(try HookConfig.removed(merged))
         #expect(out["hooks"] == nil)
         #expect(out["model"] as? String == "m")
     }
 
     @Test func nilInputCreates() throws {
-        let out = try HookConfig.merged(nil, command: ours)
+        let out = try HookConfig.merged(nil, event: "SessionStart", matcher: nil, command: ours)
         let hooks = try #require(try object(out)["hooks"] as? [String: Any])
         let group = try #require((hooks["SessionStart"] as? [[String: Any]])?.first)
         let entry = try #require((group["hooks"] as? [[String: Any]])?.first)
@@ -82,18 +82,105 @@ private func commands(_ data: Data) throws -> [String] {
         #expect(entry["timeout"] as? Int == 5)
     }
 
+    @Test func upgradeFromPhase1AddsPreToolUse() throws {
+        let phase1 = try HookConfig.merged(Data(existing.utf8), event: "SessionStart", matcher: nil, command: ours)
+        let pre = "/Users/x/.local/bin/headroom agent-hook pretool claude"
+        let out = try HookConfig.merged(phase1, event: "PreToolUse", matcher: "Bash", command: pre)
+        #expect(try commands(out) == ["bash herdr-agent-state.sh session", ours])
+        #expect(try commands(out, event: "PreToolUse") == [pre])
+        let hooks = try #require(try object(out)["hooks"] as? [String: Any])
+        let group = try #require((hooks["PreToolUse"] as? [[String: Any]])?.first)
+        #expect(group["matcher"] as? String == "Bash")
+        #expect(HookConfig.contains(out, event: "PreToolUse"))
+    }
+
+    @Test func mergeIsIdempotentPerEvent() throws {
+        let pre = "/Users/x/.local/bin/headroom agent-hook pretool claude"
+        let once = try HookConfig.merged(Data(existing.utf8), event: "PreToolUse", matcher: "Bash", command: pre)
+        let twice = try HookConfig.merged(once, event: "PreToolUse", matcher: "Bash", command: pre)
+        #expect(once == twice)
+    }
+
+    @Test func removeDropsAllOurEventsKeepsOthers() throws {
+        let foreign = Data(
+            #"{"hooks":{"PreToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"other.sh"}]}]}}"#.utf8)
+        let pre = "/Users/x/.local/bin/headroom agent-hook pretool claude"
+        let a = try HookConfig.merged(foreign, event: "SessionStart", matcher: nil, command: ours)
+        let b = try HookConfig.merged(a, event: "PreToolUse", matcher: "Bash", command: pre)
+        let out = try HookConfig.removed(b)
+        #expect(try commands(out, event: "PreToolUse") == ["other.sh"])
+        let hooks = try #require(try object(out)["hooks"] as? [String: Any])
+        #expect(hooks["SessionStart"] == nil)
+        #expect(!HookConfig.contains(out, event: "PreToolUse"))
+    }
+
+    @Test func pathChangeReplacesInPlace() throws {
+        let old = "/old/headroom agent-hook pretool claude"
+        let moved = "/new/headroom agent-hook pretool claude"
+        let first = try HookConfig.merged(Data(existing.utf8), event: "PreToolUse", matcher: "Bash", command: old)
+        let out = try HookConfig.merged(first, event: "PreToolUse", matcher: "Bash", command: moved)
+        #expect(try commands(out, event: "PreToolUse") == [moved])
+        let hooks = try #require(try object(out)["hooks"] as? [String: Any])
+        let group = try #require((hooks["PreToolUse"] as? [[String: Any]])?.first)
+        #expect(group["matcher"] as? String == "Bash")
+    }
+
+    @Test func duplicateSameModeEntriesCollapse() throws {
+        let dupes = Data(
+            #"""
+            {"hooks":{"SessionStart":[
+            {"hooks":[{"type":"command","command":"/a/headroom agent-hook claude"}]},
+            {"hooks":[{"type":"command","command":"keep.sh"},{"type":"command","command":"/b/headroom agent-hook claude"}]}]}}
+            """#.utf8)
+        let out = try HookConfig.merged(dupes, event: "SessionStart", matcher: nil, command: ours)
+        #expect(try commands(out) == [ours, "keep.sh"])
+    }
+
+    @Test func foreignHookSharingGroupSurvivesRemove() throws {
+        let shared = Data(
+            #"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"other.sh"},{"command":"/a/headroom agent-hook pretool claude"}]}]}}"#
+                .utf8)
+        let out = try HookConfig.removed(shared)
+        #expect(try commands(out, event: "PreToolUse") == ["other.sh"])
+    }
+
+    @Test func sessionStartHasNoMatcherKey() throws {
+        let out = try HookConfig.merged(nil, event: "SessionStart", matcher: nil, command: ours)
+        let hooks = try #require(try object(out)["hooks"] as? [String: Any])
+        let group = try #require((hooks["SessionStart"] as? [[String: Any]])?.first)
+        #expect(group["matcher"] == nil)
+    }
+
+    @Test func foreignEmptyEventListSurvivesRemove() throws {
+        let src = Data(#"{"hooks":{"Stop":[],"SessionStart":[{"hooks":[{"command":"/a/headroom agent-hook claude"}]}]}}"#.utf8)
+        let hooks = try #require(try object(try HookConfig.removed(src))["hooks"] as? [String: Any])
+        #expect((hooks["Stop"] as? [Any])?.isEmpty == true)
+        #expect(hooks["SessionStart"] == nil)
+    }
+
     @Test func neverTouchesStatusLine() throws {
         let before = try #require(try object(Data(existing.utf8))["statusLine"])
-        let after = try #require(try object(try HookConfig.merged(Data(existing.utf8), command: ours))["statusLine"])
+        let after = try #require(try object(try HookConfig.merged(Data(existing.utf8), event: "SessionStart", matcher: nil, command: ours))["statusLine"])
         let opts: JSONSerialization.WritingOptions = [.sortedKeys, .fragmentsAllowed]
         #expect(
             try JSONSerialization.data(withJSONObject: before, options: opts)
                 == JSONSerialization.data(withJSONObject: after, options: opts))
     }
 
+    @Test func changedHookFileIsWrittenSortedAndACorrectOneIsLeftAsIs() throws {
+        let changed = String(decoding: try HookConfig.merged(
+            Data(existing.utf8), event: "SessionStart", matcher: nil, command: ours), as: UTF8.self)
+        let order = ["\"hooks\"", "\"permissions\"", "\"statusLine\""].compactMap { changed.range(of: $0)?.lowerBound }
+        #expect(order.count == 3 && order == order.sorted(), "keys are written sorted")
+
+        let unsorted = #"{"z":1,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"\#(ours)","timeout":5}]}]},"a":2}"#
+        let again = try HookConfig.merged(Data(unsorted.utf8), event: "SessionStart", matcher: nil, command: ours)
+        #expect(again == Data(unsorted.utf8), "an already-correct file comes back byte for byte")
+    }
+
     @Test func nonObjectIsRejected() {
-        #expect(throws: HookConfigError.self) { try HookConfig.merged(Data("[1]".utf8), command: ours) }
-        #expect(throws: HookConfigError.self) { try HookConfig.merged(Data("nope".utf8), command: ours) }
+        #expect(throws: HookConfigError.self) { try HookConfig.merged(Data("[1]".utf8), event: "SessionStart", matcher: nil, command: ours) }
+        #expect(throws: HookConfigError.self) { try HookConfig.merged(Data("nope".utf8), event: "SessionStart", matcher: nil, command: ours) }
     }
 }
 
@@ -115,6 +202,22 @@ private final class Home {
 
     var bootstrapResults: [Int32] = []
     var sleeps: [TimeInterval] = []
+    /// CLIs the fake PATH lookup finds, by name, and what their `mcp list` prints.
+    var onPath: [String: String] = [:]
+    var addStatus: Int32 = 0
+    var runnerCalls: [[String]] = []
+
+    func runner(_ args: [String]) -> (status: Int32, stdout: String) {
+        runnerCalls.append(args)
+        let name = URL(filePath: args[0]).lastPathComponent
+        if args.dropFirst().starts(with: ["mcp", "list"]) { return (0, onPath[name] ?? "") }
+        if args.dropFirst().starts(with: ["mcp", "add"]) { return (addStatus, "") }
+        return (1, "")
+    }
+
+    func find(_ name: String) -> String? {
+        onPath[name] == nil ? nil : "/fake/bin/\(name)"
+    }
 
     func install(agents: Bool, bootstrapStatus: Int32 = 0) -> (Int32, [String], [String]) {
         var out: [String] = []
@@ -126,7 +229,7 @@ private final class Home {
                 guard args.first == "bootstrap" else { return 0 }
                 return self.bootstrapResults.isEmpty ? bootstrapStatus : self.bootstrapResults.removeFirst()
             },
-            sleep: { self.sleeps.append($0) },
+            sleep: { self.sleeps.append($0) }, runner: runner, find: find,
             out: { out.append($0) }, err: { err.append($0) })
         return (code, out, err)
     }
@@ -136,7 +239,8 @@ private final class Home {
         let code = Install.uninstall(
             home: home, dataDirectory: dir.appending(path: "data"), uid: 501,
             now: Date(timeIntervalSince1970: 1_800_000_001),
-            launchctl: { self.launchctlCalls.append($0); return 0 }, out: { out.append($0) }, err: { _ in })
+            launchctl: { self.launchctlCalls.append($0); return 0 }, runner: runner, find: find,
+            out: { out.append($0) }, err: { _ in })
         return (code, out)
     }
 }
@@ -194,12 +298,54 @@ private final class Home {
         #expect(try FileManager.default.contentsOfDirectory(atPath: claudeDir).count == before.count)
     }
 
+    @Test func installAgentsWritesBothEventsForBothTools() throws {
+        let h = try Home()
+        try FileManager.default.createDirectory(at: h.home.appending(path: ".codex"), withIntermediateDirectories: true)
+        let (_, out, _) = h.install(agents: true)
+        let abs = h.home.appending(path: ".local/bin/headroom").path
+        for (path, tool) in [(".claude/settings.json", "claude"), (".codex/hooks.json", "codex")] {
+            let data = try Data(contentsOf: h.home.appending(path: path))
+            #expect(try commands(data) == ["\(abs) agent-hook \(tool)"])
+            #expect(try commands(data, event: "PreToolUse") == ["\(abs) agent-hook pretool \(tool)"])
+            let hooks = try #require(try object(data)["hooks"] as? [String: Any])
+            let group = try #require((hooks["PreToolUse"] as? [[String: Any]])?.first)
+            #expect(group["matcher"] as? String == "Bash")
+        }
+        #expect(out.contains("codex: approve the new headroom hooks when Codex asks you to trust them"))
+    }
+
+    @Test func codexUserHooksSurviveInstall() throws {
+        let h = try Home()
+        let codex = h.home.appending(path: ".codex")
+        try FileManager.default.createDirectory(at: codex, withIntermediateDirectories: true)
+        let user = #"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"mine.sh"}]}]}}"#
+        try Data(user.utf8).write(to: codex.appending(path: "hooks.json"))
+        _ = h.install(agents: true)
+        let data = try Data(contentsOf: codex.appending(path: "hooks.json"))
+        let abs = h.home.appending(path: ".local/bin/headroom").path
+        #expect(try commands(data, event: "PreToolUse") == ["mine.sh", "\(abs) agent-hook pretool codex"])
+        #expect(try commands(data) == ["\(abs) agent-hook codex"])
+    }
+
+    @Test func codexMessageOnlyWhenWritten() throws {
+        let h = try Home()
+        try FileManager.default.createDirectory(at: h.home.appending(path: ".codex"), withIntermediateDirectories: true)
+        let note = "codex: approve the new headroom hooks when Codex asks you to trust them"
+        let (_, first, _) = h.install(agents: true)
+        #expect(first.contains(note))
+        let (_, second, _) = h.install(agents: true)
+        #expect(!second.contains(note))
+    }
+
     @Test func installedFileIsLeftByteIdentical() throws {
         let h = try Home()
         let settings = h.home.appending(path: ".claude/settings.json")
         let abs = h.home.appending(path: ".local/bin/headroom").path
         let installed = Data(
-            #"{ "zeta": 1, "hooks": {"SessionStart": [{"hooks": [{"command": "\#(abs) agent-hook claude"}]}]} }"#.utf8)
+            #"""
+            { "zeta": 1, "hooks": {"SessionStart": [{"hooks": [{"command": "\#(abs) agent-hook claude"}]}],
+            "PreToolUse": [{"matcher": "Bash", "hooks": [{"command": "\#(abs) agent-hook pretool claude"}]}]} }
+            """#.utf8)
         try installed.write(to: settings)
         let (_, out, _) = h.install(agents: true)
         #expect(try Data(contentsOf: settings) == installed)
@@ -336,5 +482,84 @@ private final class Home {
         let h = try Home()
         _ = h.uninstall()
         #expect(!FileManager.default.fileExists(atPath: h.home.appending(path: ".claude/settings.json").path))
+    }
+
+    @Test func mcpRegistersWhenAbsentAndSkipsWhenPresent() throws {
+        let h = try Home()
+        let abs = h.home.appending(path: ".local/bin/headroom").path
+        h.onPath = [
+            "claude": "Checking MCP server health…\n\nother: /bin/other mcp - ✔ Connected\n",
+            "codex": "Name      Command                Args\nheadroom  /old/headroom  mcp\n",
+        ]
+        let (code, out, _) = h.install(agents: true)
+        #expect(code == 0)
+        #expect(
+            h.runnerCalls == [
+                ["/fake/bin/claude", "mcp", "list"],
+                ["/fake/bin/claude", "mcp", "add", "--scope", "user", "headroom", "--", abs, "mcp"],
+                ["/fake/bin/codex", "mcp", "list"],
+            ])
+        #expect(out.contains("claude: registered the headroom MCP server"))
+        #expect(out.contains("codex: headroom MCP server already registered"))
+
+        h.runnerCalls = []
+        h.onPath = ["codex": "No MCP servers configured yet.\n"]
+        _ = h.install(agents: true)
+        #expect(
+            h.runnerCalls == [["/fake/bin/codex", "mcp", "list"], ["/fake/bin/codex", "mcp", "add", "headroom", "--", abs, "mcp"]])
+    }
+
+    /// `claude mcp list` health-checks every server and can take ~30 s, so the user is told before it starts.
+    @Test func mcpCheckAnnouncesItselfOnlyWhenACLIIsPresent() throws {
+        let h = try Home()
+        h.onPath = ["claude": ""]
+        let (_, out, _) = h.install(agents: true)
+        let notice = try #require(out.firstIndex(of: "checking MCP registrations…"))
+        let registered = try #require(out.firstIndex(of: "claude: registered the headroom MCP server"))
+        #expect(notice < registered)
+        #expect(out.filter { $0 == "checking MCP registrations…" }.count == 1)
+
+        h.onPath = [:]
+        let (_, quiet, _) = h.install(agents: true)
+        #expect(!quiet.contains("checking MCP registrations…"))
+    }
+
+    @Test func mcpNameMustMatchExactly() throws {
+        let h = try Home()
+        h.onPath = ["claude": "headroom-dev: /x/headroom mcp - ✔ Connected\nnotes: /git/headroom/run - ✔ Connected\n"]
+        _ = h.install(agents: true)
+        #expect(h.runnerCalls.contains { $0.contains("add") })
+    }
+
+    @Test func mcpAddFailureIsReportedAndInstallSucceeds() throws {
+        let h = try Home()
+        h.onPath = ["claude": ""]
+        h.addStatus = 1
+        let (code, _, err) = h.install(agents: true)
+        #expect(code == 0)
+        #expect(err.contains { $0.contains("claude mcp add") && $0.contains("status 1") })
+
+        h.runnerCalls = []
+        _ = h.install(agents: false)
+        #expect(h.runnerCalls.isEmpty)
+    }
+
+    @Test func uninstallRemovesMCPRegistrations() throws {
+        let h = try Home()
+        h.onPath = ["claude": "", "codex": ""]
+        let (code, _) = h.uninstall()
+        #expect(code == 0)
+        #expect(
+            h.runnerCalls == [
+                ["/fake/bin/claude", "mcp", "remove", "--scope", "user", "headroom"],
+                ["/fake/bin/codex", "mcp", "remove", "headroom"],
+            ])
+    }
+
+    @Test func noCLIsOnPathRunsNothing() throws {
+        let h = try Home()
+        _ = h.install(agents: true)
+        _ = h.uninstall()
+        #expect(h.runnerCalls.isEmpty)
     }
 }

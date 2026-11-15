@@ -18,6 +18,10 @@ public struct Appendix: Sendable {
     public var ssdWriteTBPerYear: Double
     public var events: [String: Int]
     public var thermalSlowdowns: Int
+    /// Advice given, keyed by `AdviceTrigger` raw value.
+    public var agentWarnings: [String: Int]
+    /// Largest memory held by flagged containers at once; zero when none were flagged.
+    public var leftoverPeakGB: Double
     public var thresholds: [String]
     public var workdayDefinition: String
     public var recorderAvgCPUPercent: Double
@@ -25,6 +29,24 @@ public struct Appendix: Sendable {
     public var notes: [String]
 
     public static let minProjectionDays = 7
+
+    /// Only the triggers that fired are named; a single one reads as a plain sentence without a breakdown.
+    public static func adviceSentence(_ counts: [String: Int]) -> String? {
+        let parts: [(count: Int, why: String)] = AdviceTrigger.allCases.compactMap { trigger in
+            let count = counts[trigger.rawValue] ?? 0
+            guard count > 0 else { return nil }
+            switch trigger {
+            case .critical: return (count, "while memory was critical")
+            case .swapGrowing: return (count, "while swap was growing")
+            case .leftovers: return (count, "because abandoned containers held memory")
+            }
+        }
+        let total = parts.reduce(0) { $0 + $1.count }
+        guard total > 0 else { return nil }
+        let lead = "Agents were advised to narrow work \(Wording.plural(total, "time"))"
+        if parts.count == 1 { return "\(lead) \(parts[0].why)." }
+        return "\(lead): " + parts.map { "\($0.count) \($0.why)" }.joined(separator: ", ") + "."
+    }
 }
 
 /// Everything the PDF shows, worked out from the database so the renderer only lays it out. Only workload
@@ -246,6 +268,8 @@ public struct ReportModel: Sendable {
             ssdDays: written.count, ssdWriteGBPerDay: gbPerDay, ssdWriteTBPerYear: gbPerDay * 365 / 1000,
             events: try queries.eventCounts(machineId: machineId, from: from, to: to),
             thermalSlowdowns: try queries.thermalSlowdowns(machineId: machineId, from: from, to: to),
+            agentWarnings: try queries.agentWarningCounts(machineId: machineId, from: from, to: to),
+            leftoverPeakGB: Double(try queries.leftoverPeakBytes(machineId: machineId, from: from, to: to) ?? 0) / 1e9,
             thresholds: [
                 "Memory ran out: memory pressure was at warning or critical, or memory was being swapped out to disk.",
                 "A workday counts as running out of memory after \(quantity(Double(limits.memoryLimitedDayMinSeconds) / 60, "minute")) of that.",

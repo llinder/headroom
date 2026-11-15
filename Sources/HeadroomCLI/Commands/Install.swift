@@ -27,15 +27,54 @@ enum HookConfig {
     static let marker = "headroom agent-hook"
     private static let writing: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
 
-    /// An already-installed file comes back as the same bytes, so a reinstall never rewrites, re-sorts or backs it up.
-    static func merged(_ json: Data?, command: String) throws -> Data {
+    /// Headroom entries of the same mode (pretool or session) under an event are one entry: a moved binary rewrites
+    /// the command in place and leftover duplicates collapse. An already-correct file comes back as the same bytes,
+    /// so a reinstall never rewrites, re-sorts or backs it up.
+    static func merged(_ json: Data?, event: String, matcher: String?, command: String) throws -> Data {
         var root = try parse(json)
-        if let json, contains(root) { return json }
         var hooks = try section(root["hooks"])
-        var groups = try groupList(hooks["SessionStart"])
-        let entry: [String: Any] = ["type": "command", "command": command, "timeout": 5]
-        groups.append(["hooks": [entry]])
-        hooks["SessionStart"] = groups
+        var groups = try groupList(hooks[event], event: event)
+        let pretool = isPretool(command)
+        var found = false
+        var changed = false
+        var rebuilt: [[String: Any]] = []
+        for group in groups {
+            guard let entries = group["hooks"] as? [[String: Any]] else {
+                rebuilt.append(group)
+                continue
+            }
+            var kept: [[String: Any]] = []
+            for var entry in entries {
+                guard isOurs(entry), let existing = entry["command"] as? String, isPretool(existing) == pretool else {
+                    kept.append(entry)
+                    continue
+                }
+                if found {
+                    changed = true
+                    continue
+                }
+                found = true
+                if existing != command {
+                    entry["command"] = command
+                    changed = true
+                }
+                kept.append(entry)
+            }
+            if kept.isEmpty { continue }
+            var copy = group
+            copy["hooks"] = kept
+            rebuilt.append(copy)
+        }
+        if found {
+            if let json, !changed { return json }
+            groups = rebuilt
+        } else {
+            let entry: [String: Any] = ["type": "command", "command": command, "timeout": 5]
+            var group: [String: Any] = ["hooks": [entry]]
+            group["matcher"] = matcher
+            groups.append(group)
+        }
+        hooks[event] = groups
         root["hooks"] = hooks
         return try encode(root)
     }
@@ -43,32 +82,36 @@ enum HookConfig {
     static func removed(_ json: Data) throws -> Data {
         var root = try parse(json)
         var hooks = try section(root["hooks"])
-        guard hooks["SessionStart"] != nil else { return try encode(root) }
-        let kept = try groupList(hooks["SessionStart"]).compactMap { group -> [String: Any]? in
-            guard let entries = group["hooks"] as? [[String: Any]] else { return group }
-            let rest = entries.filter { !isOurs($0) }
-            if rest.count == entries.count { return group }
-            if rest.isEmpty { return nil }
-            var copy = group
-            copy["hooks"] = rest
-            return copy
+        var touched = false
+        for (event, value) in hooks {
+            guard let groups = value as? [[String: Any]] else { continue }
+            var eventTouched = false
+            let kept = groups.compactMap { group -> [String: Any]? in
+                guard let entries = group["hooks"] as? [[String: Any]] else { return group }
+                let rest = entries.filter { !isOurs($0) }
+                if rest.count == entries.count { return group }
+                eventTouched = true
+                if rest.isEmpty { return nil }
+                var copy = group
+                copy["hooks"] = rest
+                return copy
+            }
+            guard eventTouched else { continue }
+            touched = true
+            hooks[event] = kept.isEmpty ? nil : kept
         }
-        hooks["SessionStart"] = kept.isEmpty ? nil : kept
-        root["hooks"] = hooks.isEmpty ? nil : hooks
+        if touched { root["hooks"] = hooks.isEmpty ? nil : hooks }
         return try encode(root)
     }
 
-    static func contains(_ json: Data) -> Bool {
-        guard let root = try? parse(json) else { return false }
-        return contains(root)
-    }
-
-    private static func contains(_ root: [String: Any]) -> Bool {
-        guard let hooks = root["hooks"] as? [String: Any], let groups = hooks["SessionStart"] as? [[String: Any]] else {
-            return false
-        }
+    static func contains(_ json: Data, event: String) -> Bool {
+        guard let root = try? parse(json), let hooks = root["hooks"] as? [String: Any],
+            let groups = hooks[event] as? [[String: Any]]
+        else { return false }
         return groups.contains { ($0["hooks"] as? [[String: Any]] ?? []).contains(where: isOurs) }
     }
+
+    private static func isPretool(_ command: String) -> Bool { command.contains(" agent-hook pretool ") }
 
     private static func isOurs(_ entry: [String: Any]) -> Bool {
         (entry["command"] as? String)?.contains(marker) == true
@@ -88,10 +131,10 @@ enum HookConfig {
         return dict
     }
 
-    private static func groupList(_ value: Any?) throws -> [[String: Any]] {
+    private static func groupList(_ value: Any?, event: String) throws -> [[String: Any]] {
         guard let value else { return [] }
         guard let list = value as? [[String: Any]] else {
-            throw HookConfigError(message: "hooks.SessionStart is not a list of objects")
+            throw HookConfigError(message: "hooks.\(event) is not a list of objects")
         }
         return list
     }
@@ -102,6 +145,7 @@ enum HookConfig {
 }
 
 enum Install {
+    private static let hookEvents = ["SessionStart", "PreToolUse"]
     private static let binaries = ["headroom", "headroomd"]
     private static let bootstrapAttempts = 5
 
@@ -124,10 +168,82 @@ enum Install {
         home.appending(path: "Library/LaunchAgents/\(LaunchAgent.label).plist")
     }
 
+    typealias Runner = ([String]) -> (status: Int32, stdout: String)
+
+    /// Runs a CLI with no stdin and returns its stdout. Its stderr is dropped: `mcp remove` of a server that isn't
+    /// registered complains there, and that is the expected case.
+    static func runProcess(_ arguments: [String]) -> (status: Int32, stdout: String) {
+        guard let executable = arguments.first else { return (127, "") }
+        let process = Process()
+        process.executableURL = URL(filePath: executable)
+        process.arguments = Array(arguments.dropFirst())
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return (127, "") }
+        // Draining before the wait keeps a chatty child from blocking on a full pipe.
+        let output = (try? pipe.fileHandleForReading.readToEnd()) ?? nil
+        process.waitUntilExit()
+        return (process.terminationStatus, output.map { String(decoding: $0, as: UTF8.self) } ?? "")
+    }
+
+    static func which(_ name: String) -> String? {
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for dir in path.split(separator: ":") where !dir.isEmpty {
+            let candidate = URL(filePath: String(dir)).appending(path: name).path
+            if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
+        }
+        return nil
+    }
+
+    private static let mcpName = "headroom"
+
+    private static func mcpAdd(tool: String, cli: String, exe: String) -> [String] {
+        tool == "claude"
+            ? [cli, "mcp", "add", "--scope", "user", mcpName, "--", exe, "mcp"]
+            : [cli, "mcp", "add", mcpName, "--", exe, "mcp"]
+    }
+
+    private static func mcpRemove(tool: String, cli: String) -> [String] {
+        tool == "claude" ? [cli, "mcp", "remove", "--scope", "user", mcpName] : [cli, "mcp", "remove", mcpName]
+    }
+
+    /// Both CLIs print one server per line with its name first: Claude Code as `name: command - status`, Codex as a
+    /// table row. Matching the whole first field keeps `headroom-dev`, or a path containing `headroom`, from counting.
+    static func mcpRegistered(_ listing: String) -> Bool {
+        listing.split(whereSeparator: \.isNewline).contains { line in
+            guard let first = line.split(whereSeparator: \.isWhitespace).first else { return false }
+            return first == mcpName || first == "\(mcpName):"
+        }
+    }
+
+    static func mcpRegister(
+        exe: String, runner: Runner, find: (String) -> String?, out: (String) -> Void, err: (String) -> Void
+    ) {
+        let found = ["claude", "codex"].compactMap { tool in find(tool).map { (tool: tool, cli: $0) } }
+        // `claude mcp list` health-checks every configured server and can take half a minute.
+        if !found.isEmpty { out("checking MCP registrations…") }
+        for (tool, cli) in found {
+            let listing = runner([cli, "mcp", "list"])
+            if listing.status == 0, mcpRegistered(listing.stdout) {
+                out("\(tool): headroom MCP server already registered")
+                continue
+            }
+            let add = mcpAdd(tool: tool, cli: cli, exe: exe)
+            let status = runner(add).status
+            if status == 0 {
+                out("\(tool): registered the headroom MCP server")
+            } else {
+                err("\(tool) mcp add failed with status \(status); to register by hand: \(add.joined(separator: " "))")
+            }
+        }
+    }
+
     static func run(
         agents: Bool, home: URL, sourceDir: URL, uid: UInt32, now: Date, launchctl: ([String]) -> Int32,
-        sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
-        out: (String) -> Void, err: (String) -> Void
+        sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }, runner: Runner,
+        find: (String) -> String?, out: (String) -> Void, err: (String) -> Void
     ) -> Int32 {
         let fm = FileManager.default
         let bin = home.appending(path: ".local/bin")
@@ -164,10 +280,15 @@ enum Install {
         guard agents else { return 0 }
         let exe = bin.appending(path: "headroom").path
         for (file, tool) in hookFiles(home: home) where fm.fileExists(atPath: file.deletingLastPathComponent().path) {
-            update(file, now: now, out: out, err: err) {
-                try HookConfig.merged($0, command: "\(exe) agent-hook \(tool)")
+            let written = update(file, now: now, out: out, err: err) {
+                let session = try HookConfig.merged(
+                    $0, event: "SessionStart", matcher: nil, command: "\(exe) agent-hook \(tool)")
+                return try HookConfig.merged(
+                    session, event: "PreToolUse", matcher: "Bash", command: "\(exe) agent-hook pretool \(tool)")
             }
+            if tool == "codex", written { out("codex: approve the new headroom hooks when Codex asks you to trust them") }
         }
+        mcpRegister(exe: exe, runner: runner, find: find, out: out, err: err)
         out(
             """
             status line: ccstatusline custom command: \(exe) statusline
@@ -177,8 +298,8 @@ enum Install {
     }
 
     static func uninstall(
-        home: URL, dataDirectory: URL, uid: UInt32, now: Date, launchctl: ([String]) -> Int32,
-        out: (String) -> Void, err: (String) -> Void
+        home: URL, dataDirectory: URL, uid: UInt32, now: Date, launchctl: ([String]) -> Int32, runner: Runner,
+        find: (String) -> String?, out: (String) -> Void, err: (String) -> Void
     ) -> Int32 {
         let fm = FileManager.default
         _ = launchctl(["bootout", "gui/\(uid)/\(LaunchAgent.label)"])
@@ -192,9 +313,14 @@ enum Install {
         }
         for (file, _) in hookFiles(home: home) where fm.fileExists(atPath: file.path) {
             update(file, now: now, out: out, err: err) { data in
-                guard let data, HookConfig.contains(data) else { return nil }
+                guard let data, hookEvents.contains(where: { HookConfig.contains(data, event: $0) }) else { return nil }
                 return try HookConfig.removed(data)
             }
+        }
+        // Failures are ignored: the usual one is that headroom was never registered with that CLI.
+        for tool in ["claude", "codex"] {
+            guard let cli = find(tool) else { continue }
+            _ = runner(mcpRemove(tool: tool, cli: cli))
         }
         out("uninstalled \(LaunchAgent.label)")
         out("data kept at \(dataDirectory.path)")
@@ -203,26 +329,27 @@ enum Install {
 
     /// Backs up the original and writes only when the content changes. Only a missing file counts as empty: an
     /// unreadable or unparseable one is reported and left alone. Symlinks are resolved so the link survives the write.
+    @discardableResult
     private static func update(
         _ original: URL, now: Date, out: (String) -> Void, err: (String) -> Void, transform: (Data?) throws -> Data?
-    ) {
+    ) -> Bool {
         let file = original.resolvingSymlinksInPath()
         let fm = FileManager.default
         var existing: Data?
         if fm.fileExists(atPath: file.path) {
             guard let data = try? Data(contentsOf: file) else {
                 err("\(original.path): unreadable, left unchanged")
-                return
+                return false
             }
             existing = data
         }
         do {
-            guard let updated = try transform(existing) else { return }
+            guard let updated = try transform(existing) else { return false }
             if let existing {
-                if updated == existing { return }
+                if updated == existing { return false }
                 let old = try JSONSerialization.jsonObject(with: existing) as? NSDictionary
                 let new = try JSONSerialization.jsonObject(with: updated) as? NSDictionary
-                if old == new { return }
+                if old == new { return false }
                 try backup(file, contents: existing, now: now)
             }
             // Atomic writes land a new inode at the default mode; configs here can hold tokens, so keep the original's.
@@ -230,10 +357,13 @@ enum Install {
             try updated.write(to: file, options: .atomic)
             try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: file.path)
             out("updated \(original.path)")
+            return true
         } catch let error as HookConfigError {
             err("\(original.path): \(error.message); left unchanged")
+            return false
         } catch {
             err("\(original.path): \(error.localizedDescription); left unchanged")
+            return false
         }
     }
 
