@@ -43,9 +43,46 @@ public struct AgentsConfig: Codable, Sendable, Equatable {
     }
 }
 
+public struct IgnoreRules: Codable, Sendable, Equatable {
+    public var names: [String] = []
+    public var images: [String] = []
+    /// `key` or `key=value`.
+    public var labels: [String] = []
+
+    public init(names: [String] = [], images: [String] = [], labels: [String] = []) {
+        self.names = names
+        self.images = images
+        self.labels = labels
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        names = try c.decodeIfPresent([String].self, forKey: .names) ?? []
+        images = try c.decodeIfPresent([String].self, forKey: .images) ?? []
+        labels = try c.decodeIfPresent([String].self, forKey: .labels) ?? []
+    }
+}
+
+public struct LeftoversConfig: Codable, Sendable, Equatable {
+    public var afterMinutes = 60
+    public var unownedAfterHours = 24
+    public var ignore = IgnoreRules()
+
+    public init() {}
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = LeftoversConfig()
+        afterMinutes = try c.decodeIfPresent(Int.self, forKey: .afterMinutes) ?? d.afterMinutes
+        unownedAfterHours = try c.decodeIfPresent(Int.self, forKey: .unownedAfterHours) ?? d.unownedAfterHours
+        ignore = try c.decodeIfPresent(IgnoreRules.self, forKey: .ignore) ?? d.ignore
+    }
+}
+
 public struct HeadroomConfig: Codable, Sendable, Equatable {
     public var limits = LimitConfig()
     public var agents = AgentsConfig()
+    public var leftovers = LeftoversConfig()
     public var workdayMinAwakeSeconds = 7200
     public var agentActiveCoreFraction = 0.05
     public var capacityMaxLimitedShare = 0.05
@@ -59,6 +96,7 @@ public struct HeadroomConfig: Codable, Sendable, Equatable {
         let d = HeadroomConfig()
         limits = try c.decodeIfPresent(LimitConfig.self, forKey: .limits) ?? d.limits
         agents = try c.decodeIfPresent(AgentsConfig.self, forKey: .agents) ?? d.agents
+        leftovers = try c.decodeIfPresent(LeftoversConfig.self, forKey: .leftovers) ?? d.leftovers
         workdayMinAwakeSeconds = try c.decodeIfPresent(Int.self, forKey: .workdayMinAwakeSeconds) ?? d.workdayMinAwakeSeconds
         agentActiveCoreFraction = try c.decodeIfPresent(Double.self, forKey: .agentActiveCoreFraction) ?? d.agentActiveCoreFraction
         capacityMaxLimitedShare = try c.decodeIfPresent(Double.self, forKey: .capacityMaxLimitedShare) ?? d.capacityMaxLimitedShare

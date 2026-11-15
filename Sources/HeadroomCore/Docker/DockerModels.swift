@@ -11,6 +11,14 @@ public struct DockerContainer: Decodable, Sendable, Equatable {
         case id = "Id", names = "Names", image = "Image", labels = "Labels", state = "State"
     }
 
+    public init(id: String, names: [String], image: String, labels: [String: String], state: String) {
+        self.id = id
+        self.names = names
+        self.image = image
+        self.labels = labels
+        self.state = state
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
