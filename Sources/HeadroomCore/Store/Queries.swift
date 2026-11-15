@@ -116,20 +116,22 @@ public struct Queries {
         }.compactMap { $0 }
     }
 
-    /// Rows whose payload lacks a parseable root are skipped, like `tags`.
-    public func containerIntents(machineId: String, from: Double, to: Double) throws(DatabaseError) -> [(ts: Double, root: ProcessKey)] {
+    /// Rows whose payload lacks a parseable root are skipped, like `tags`. Rows without `start` are not start markers.
+    public func containerIntents(
+        machineId: String, from: Double, to: Double
+    ) throws(DatabaseError) -> [(ts: Double, root: ProcessKey, start: Bool)] {
         try rows(
             "SELECT ts, payload FROM events WHERE machine_id=? AND kind='container_intent' AND ts>=? AND ts<? ORDER BY ts"
         ) { s in
             s.bind(1, machineId)
             s.bind(2, Self.epoch(from))
             s.bind(3, Self.epoch(to))
-        } read: { s -> (ts: Double, root: ProcessKey)? in
+        } read: { s -> (ts: Double, root: ProcessKey, start: Bool)? in
             guard let payload = try? JSONDecoder().decode([String: String].self, from: Data(s.string(1).utf8)),
                 let pid = payload["rootPid"].flatMap({ Int32($0) }),
                 let start = payload["rootStart"].flatMap({ UInt64($0) })
             else { return nil }
-            return (s.double(0), ProcessKey(pid: pid, start: start))
+            return (s.double(0), ProcessKey(pid: pid, start: start), payload["start"] == "true")
         }.compactMap { $0 }
     }
 

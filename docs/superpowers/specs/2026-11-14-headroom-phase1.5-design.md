@@ -100,7 +100,7 @@ npm test, npm run build, npx vitest, pnpm test, pytest, bazel, bazelisk
 
 **Rate limit.** Advice is given at most once per `agents.adviceMinutes` (default 5) per throttle key. The key is `session_id`, plus `agent_id` when present, because subagents share their parent's session id. Ids are validated against `[A-Za-z0-9._-]`, then used as the file name under `Application Support/headroom/pretool/`. The file's modification time is the timestamp. `headroomd` deletes entries older than 1 day.
 
-**Container ownership marker.** When the command contains a container-kind segment (`docker run`, `docker compose up`, `kind create cluster`, `docker buildx`), the hook appends `SpoolRecord.containerIntent(ts, rootPid, rootStart)`. It does this **whether or not advice was given**, rate-limited to once a minute per throttle key. No command text is stored. This is what leftover ownership uses (section 3).
+**Container ownership marker.** When a segment's head is `docker`, `kubectl`, `kind` or `helm`, the hook appends `SpoolRecord.containerIntent(ts, rootPid, rootStart, start)`. It does this **whether or not advice was given**, rate-limited to once a minute per throttle key. `start` is true only for commands that start containers: `docker run`, `docker start`, `docker create`, `docker compose up`, `docker compose start`, `kind create`, `helm install`, `helm upgrade`, `kubectl apply`, `kubectl create` and `kubectl run`, with global options such as `--context` or `-f` skipped. Start markers have their own once-a-minute throttle, so a `docker ps` just before a `docker run` can't hide the start. The event payload carries `"start":"true"` for them; a record or row without it is not a start marker. No command text is stored. This is what leftover ownership uses (section 3).
 
 **Record.** Advice appends `SpoolRecord.agentWarning(ts, trigger)`, which becomes an `agent_warning` event with the payload `{"trigger":"critical"}`, `{"trigger":"swapGrowing"}` or `{"trigger":"leftovers"}`. Records and rows written before the trigger was added have none and an empty payload; they count as `critical`, the only trigger that existed then. There is no schema change.
 
@@ -184,7 +184,7 @@ Paths are resolved through symlinks and deduplicated, keeping the first context 
 
 **Ownership** (used when there is no label or keep entry).
 
-- **Owner.** An item's owner is the agent run whose most recent `containerIntent` marker comes at or before the item's start, within 10 minutes. Several runs can't co-own an item: the closest marker wins.
+- **Owner.** An item's owner is the agent run whose most recent **start** marker comes at or before the item's start, within 10 minutes. Several runs can't co-own an item: the closest marker wins. A marker from a command that only looks, such as `docker ps`, never names an owner, so an agent that ran one just before a human's `compose up` doesn't own the stack. Every marker still counts as the owner's activity.
 - **Done.** The owner is done when its process has exited, or when it has sent no container marker for `leftovers.afterMinutes` (default 60) of **awake, recorded time**. Sleep and recorder gaps don't count.
   - A live run that shares the owner's `session_id` inherits ownership, so a resumed session keeps its containers.
 - **Testcontainers.** When the reaper for that `sessionId` is gone but containers remain, the item is a leftover immediately.

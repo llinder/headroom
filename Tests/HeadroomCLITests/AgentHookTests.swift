@@ -322,9 +322,21 @@ private let releaseBinary: URL? = {
         let paths = Paths(root: dir)
         let result = pretool(bashInput("docker run x"), snapshot: pretoolSnapshot(), paths: paths)
         #expect(result.stdout == nil)
-        let intent = SpoolRecord.containerIntent(ts: Self.pretoolNow, rootPid: 20, rootStart: 20_000)
+        let intent = SpoolRecord.containerIntent(ts: Self.pretoolNow, rootPid: 20, rootStart: 20_000, start: true)
         #expect(result.spool == [intent])
         #expect(spooled(Spool(url: paths.spool)) == [intent])
+    }
+
+    @Test func lookupThrottleNeverHidesAStart() throws {
+        let dir = try scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let paths = Paths(root: dir)
+        let lookup = pretool(bashInput("docker ps"), snapshot: nil, paths: paths)
+        #expect(lookup.spool == [.containerIntent(ts: Self.pretoolNow, rootPid: 20, rootStart: 20_000, start: false)])
+        let start = pretool(bashInput("docker run x"), snapshot: nil, paths: paths, now: Self.pretoolNow + 10)
+        #expect(start.spool == [.containerIntent(ts: Self.pretoolNow + 10, rootPid: 20, rootStart: 20_000, start: true)])
+        #expect(pretool(bashInput("docker ps"), snapshot: nil, paths: paths, now: Self.pretoolNow + 20).spool.isEmpty)
+        #expect(pretool(bashInput("docker run y"), snapshot: nil, paths: paths, now: Self.pretoolNow + 30).spool.isEmpty)
     }
 
     @Test func staleSnapshotStillRecordsKubectlAndHelmIntents() throws {
@@ -333,7 +345,7 @@ private let releaseBinary: URL? = {
             defer { try? FileManager.default.removeItem(at: dir) }
             let result = pretool(bashInput(command), snapshot: pretoolSnapshot(age: 600), paths: Paths(root: dir))
             #expect(result.stdout == nil)
-            #expect(result.spool == [SpoolRecord.containerIntent(ts: Self.pretoolNow, rootPid: 20, rootStart: 20_000)],
+            #expect(result.spool == [SpoolRecord.containerIntent(ts: Self.pretoolNow, rootPid: 20, rootStart: 20_000, start: true)],
                     "\(command)")
         }
     }

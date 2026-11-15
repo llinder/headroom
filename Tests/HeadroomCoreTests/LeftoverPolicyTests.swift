@@ -22,11 +22,14 @@ private func run(
 
 private let wallClock: @Sendable (Double, Double) -> Double = { from, to in max(0, to - from) }
 
+/// `intents` are start markers; `lookups` are markers from commands that only use containers, such as `docker ps`.
 private func facts(
-    intents: [(ts: Double, root: ProcessKey)] = [], runs: [ProcessKey: RunFacts] = [:],
-    awake: @escaping @Sendable (Double, Double) -> Double = wallClock
+    intents: [(ts: Double, root: ProcessKey)] = [], lookups: [(ts: Double, root: ProcessKey)] = [],
+    runs: [ProcessKey: RunFacts] = [:], awake: @escaping @Sendable (Double, Double) -> Double = wallClock
 ) -> OwnershipFacts {
-    OwnershipFacts(intents: intents, runs: runs, awakeSeconds: awake)
+    OwnershipFacts(
+        intents: intents.map { (ts: $0.ts, root: $0.root, start: true) } + lookups.map { (ts: $0.ts, root: $0.root, start: false) },
+        runs: runs, awakeSeconds: awake)
 }
 
 private func decide(
@@ -65,6 +68,23 @@ struct LeftoverPolicyTests {
         #expect(decide(temporary, facts: live, now: t0 + 401)
             == .leftover(reason: "the agent session that started it is done"))
         #expect(decide(item(), facts: live, now: t0 + 401) == .notYet)
+    }
+
+    @Test func onlyStartMarkersNameTheOwner() {
+        // An agent's `docker ps` two minutes before a human's `compose up` doesn't make the agent the owner.
+        let agent = run(ended: t0 + 60, lastIntent: t0 - 120)
+        let peeked = facts(lookups: [(ts: t0 - 120, root: a)], runs: [a: agent])
+        #expect(decide(item(kind: .compose), facts: peeked, now: t0 + 3600) == .notYet)
+
+        let started = facts(intents: [(ts: t0 - 120, root: a)], runs: [a: agent])
+        #expect(decide(item(kind: .compose), facts: started, now: t0 + 3600)
+            == .leftover(reason: "the agent session that started it is done"))
+
+        // A lookup still counts as activity, so a later one keeps the owner of a start marker alive.
+        let busy = facts(
+            intents: [(ts: t0 - 120, root: a)], lookups: [(ts: t0 + 3000, root: a)],
+            runs: [a: run(lastIntent: t0 + 3000)])
+        #expect(decide(item(), facts: busy, now: t0 + 3700) == .notYet)
     }
 
     @Test func recentActivityKeepsOwnerAlive() {

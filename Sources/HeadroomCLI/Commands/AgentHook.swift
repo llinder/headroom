@@ -87,14 +87,19 @@ public enum AgentHook {
         let spool = Spool(url: paths.spool)
         var appended: [SpoolRecord] = []
 
+        // Start markers have their own throttle, so a `docker ps` just before a `docker run` can't hide the start.
         let intentKey = key + ".ci"
-        if PreToolAdvice.classify(command, heavy: []).containerIntent,
-            throttle.due(key: intentKey, now: now, minutes: 1),
+        let startKey = key + ".cs"
+        let intent = PreToolAdvice.classify(command, heavy: [])
+        if intent.containerIntent,
+            throttle.due(key: intent.start ? startKey : intentKey, now: now, minutes: 1),
             let root = outermostAgent(from: parentPid, lookup: lookup, rules: rules())
         {
-            let record = SpoolRecord.containerIntent(ts: now, rootPid: root.key.pid, rootStart: root.key.start)
+            let record = SpoolRecord.containerIntent(
+                ts: now, rootPid: root.key.pid, rootStart: root.key.start, start: intent.start)
             if spool.append(record) {
                 throttle.touch(key: intentKey, now: now)
+                if intent.start { throttle.touch(key: startKey, now: now) }
                 appended.append(record)
             }
         }

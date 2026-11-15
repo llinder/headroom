@@ -20,9 +20,28 @@ enum PreToolAdvice {
         return nil
     }
 
-    static func classify(_ command: String, heavy: [String]) -> (kind: CommandKind?, containerIntent: Bool) {
+    /// Subcommand paths that start containers, matched against a segment's first positional words.
+    private static let startCommands: [String: [[String]]] = [
+        "docker": [["run"], ["start"], ["create"], ["compose", "up"], ["compose", "start"]],
+        "kind": [["create"]],
+        "helm": [["install"], ["upgrade"]],
+        "kubectl": [["apply"], ["create"], ["run"]],
+    ]
+    /// Options that take a separate value, so the value isn't mistaken for a subcommand.
+    private static let valueOptions: [String: Set<String>] = [
+        "docker": [
+            "--context", "-c", "--host", "-H", "--config", "--log-level", "-l", "-f", "--file", "-p", "--project-name",
+            "--project-directory", "--env-file", "--profile", "--ansi", "--progress", "--parallel",
+        ],
+        "kind": [],
+        "helm": ["-n", "--namespace", "--kube-context", "--kubeconfig"],
+        "kubectl": ["-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user", "-s", "--server"],
+    ]
+
+    static func classify(_ command: String, heavy: [String]) -> (kind: CommandKind?, containerIntent: Bool, start: Bool) {
         var kind: CommandKind?
         var intent = false
+        var start = false
         let separators = command
             .replacing("&&", with: "\n")
             .replacing("||", with: "\n")
@@ -33,10 +52,30 @@ enum PreToolAdvice {
             }
             guard let head = words.first else { continue }
             let segment = words.joined(separator: " ")
-            if containerTools.contains(head) { intent = true }
+            if containerTools.contains(head) {
+                intent = true
+                if !start { start = startsContainers(head: head, arguments: words.dropFirst()) }
+            }
             if kind == nil, heavy.contains(where: { hasPrefix(segment, $0) }) { kind = kindOf(head) }
         }
-        return (kind, intent)
+        return (kind, intent, start)
+    }
+
+    private static func startsContainers(head: String, arguments: ArraySlice<String>) -> Bool {
+        let takesValue = valueOptions[head] ?? []
+        var positional: [String] = []
+        var skipNext = false
+        for word in arguments {
+            if skipNext {
+                skipNext = false
+            } else if word.hasPrefix("-") {
+                skipNext = !word.contains("=") && takesValue.contains(word)
+            } else {
+                positional.append(word)
+                if positional.count == 2 { break }
+            }
+        }
+        return (startCommands[head] ?? []).contains { positional.starts(with: $0) }
     }
 
     static func text(trigger: AdviceTrigger, kind: CommandKind?, snapshot s: LiveSnapshot) -> String {

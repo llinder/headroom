@@ -281,19 +281,23 @@ private func run(_ pid: Int32, cpu: Double, footprint: UInt64, write: UInt64 = 0
         let f = try Fixture()
         f.store.ingest([
             .agentWarning(ts: Double(base + 1), trigger: nil),
-            .containerIntent(ts: Double(base + 2), rootPid: 4242, rootStart: 1_700_000_000_000_000),
+            .containerIntent(ts: Double(base + 2), rootPid: 4242, rootStart: 1_700_000_000_000_000, start: false),
             .agentWarning(ts: Double(base + 3), trigger: .swapGrowing),
+            .containerIntent(ts: Double(base + 4), rootPid: 1, rootStart: 2, start: true),
         ])
         try f.store.flush()
         let events = try f.rows("SELECT ts, kind, payload FROM events WHERE machine_id='m1' ORDER BY ts", columns: 3)
         #expect(events.map { Array($0.prefix(2)) } == [
             ["\(base + 1)", "agent_warning"], ["\(base + 2)", "container_intent"], ["\(base + 3)", "agent_warning"],
+            ["\(base + 4)", "container_intent"],
         ])
         let decoder = JSONDecoder()
         #expect(try decoder.decode([String: String].self, from: Data(events[0][2].utf8)) == [:])
         #expect(try decoder.decode([String: String].self, from: Data(events[1][2].utf8))
             == ["rootPid": "4242", "rootStart": "1700000000000000"])
         #expect(events[2][2] == #"{"trigger":"swapGrowing"}"#)
+        #expect(try decoder.decode([String: String].self, from: Data(events[3][2].utf8))
+            == ["rootPid": "1", "rootStart": "2", "start": "true"])
     }
 
     @Test func ingestTagAndCommand() throws {

@@ -167,7 +167,7 @@ private func wallNow() -> Double { Date().timeIntervalSince1970 }
 
         // `compose down && up` keeps the item key; an agent announced the new stack just before it started.
         try db.exec("""
-            INSERT INTO events VALUES('m1', \(Int64(now - 90)), 'container_intent', '{"rootPid":"10","rootStart":"1000"}');
+            INSERT INTO events VALUES('m1', \(Int64(now - 90)), 'container_intent', '{"rootPid":"10","rootStart":"1000","start":"true"}');
             """)
         let second = monitor([("default", after)]).pass(
             previous: first.state, facts: db.facts(now: now + 300), keeps: KeepList(), now: now + 300, deadline: wallNow() + 10)

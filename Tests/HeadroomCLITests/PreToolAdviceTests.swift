@@ -70,6 +70,25 @@ import Testing
         #expect(PreToolAdvice.classify("helm list", heavy: heavy).kind == nil)
     }
 
+    @Test func onlyStartCommandsAreStartIntents() {
+        for command in [
+            "docker run --rm x", "docker compose up -d", "docker compose start", "docker start web", "docker create x",
+            "docker --context orb run x", "docker compose -f dev.yml -p shop up", "kind create cluster --name dev",
+            "helm install x ./chart", "helm upgrade --install x ./chart", "kubectl apply -f -", "kubectl -n ns create ns",
+            "kubectl run tmp --image=busybox", "ls && sudo docker run x",
+        ] {
+            let result = PreToolAdvice.classify(command, heavy: [])
+            #expect(result.containerIntent && result.start, "\(command)")
+        }
+        for command in [
+            "docker ps", "docker compose ps", "docker compose down", "docker logs -f web", "docker stop web",
+            "kind get clusters", "kind delete cluster", "helm list", "helm uninstall x", "kubectl get pods",
+            "kubectl delete pod x", "docker --context run ps", "echo docker run x",
+        ] {
+            #expect(!PreToolAdvice.classify(command, heavy: []).start, "\(command)")
+        }
+    }
+
     @Test func adviceTextExact() {
         let s = snap(swapUsed: 14_000_000_000, growth: 600_000_000)
         let critical = "headroom: memory pressure is critical (swap 14.0 GB, +0.6 GB/min)."

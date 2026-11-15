@@ -19,7 +19,8 @@ public struct RunFacts: Sendable, Equatable {
 }
 
 public struct OwnershipFacts: Sendable {
-    public var intents: [(ts: Double, root: ProcessKey)]
+    /// Every container marker; only those with `start` can name an owner, but all of them count as activity.
+    public var intents: [(ts: Double, root: ProcessKey, start: Bool)]
     public var runs: [ProcessKey: RunFacts]
     /// Recorded awake seconds in [from, to): sleep and recorder gaps don't count toward idleness. `to` must be the
     /// `now` the facts were read at, because the bounded clock from `Queries.ownershipFacts` only holds the newest
@@ -27,7 +28,7 @@ public struct OwnershipFacts: Sendable {
     public var awakeSeconds: @Sendable (Double, Double) -> Double
 
     public init(
-        intents: [(ts: Double, root: ProcessKey)], runs: [ProcessKey: RunFacts],
+        intents: [(ts: Double, root: ProcessKey, start: Bool)], runs: [ProcessKey: RunFacts],
         awakeSeconds: @escaping @Sendable (Double, Double) -> Double
     ) {
         self.intents = intents
@@ -101,10 +102,11 @@ public enum LeftoverPolicy {
             ? .leftover(reason: "running for more than \(hours) hours with no agent owner") : .notYet
     }
 
-    /// The run whose marker is the latest at or before the start, within the window; the closest marker wins.
+    /// The run whose start marker is the latest at or before the start, within the window; the closest marker wins.
+    /// A `docker ps` or `kubectl get` only looks, so it can't claim a container someone else started just after.
     private static func intentOwner(startedAt: Double, facts: OwnershipFacts) -> ProcessKey? {
         facts.intents
-            .filter { $0.ts <= startedAt + clockSkew && startedAt - $0.ts <= intentWindow }
+            .filter { $0.start && $0.ts <= startedAt + clockSkew && startedAt - $0.ts <= intentWindow }
             .max { $0.ts < $1.ts }?.root
     }
 

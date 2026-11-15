@@ -58,7 +58,7 @@ private final class Fixture {
     @Test func containerIntentsInRange() throws {
         let f = try Fixture()
         try f.db.exec("""
-            INSERT INTO events VALUES('m1', \(at(0, 3)), 'container_intent', '{"rootPid":"30","rootStart":"3000"}');
+            INSERT INTO events VALUES('m1', \(at(0, 3)), 'container_intent', '{"rootPid":"30","rootStart":"3000","start":"true"}');
             INSERT INTO events VALUES('m1', \(at(0, 1)), 'container_intent', '{"rootPid":"10","rootStart":"1000"}');
             INSERT INTO events VALUES('m1', \(at(0, 2)), 'container_intent', '{"rootPid":"bad"}');
             INSERT INTO events VALUES('m1', \(at(0, 5)), 'container_intent', '{"rootPid":"50","rootStart":"5000"}');
@@ -66,6 +66,7 @@ private final class Fixture {
         let got = try Queries(db: f.db).containerIntents(machineId: "m1", from: Double(at(0, 0)), to: Double(at(0, 4)))
         #expect(got.map(\.ts) == [Double(at(0, 1)), Double(at(0, 3))])
         #expect(got.map(\.root) == [ProcessKey(pid: 10, start: 1000), ProcessKey(pid: 30, start: 3000)])
+        #expect(got.map(\.start) == [false, true])
     }
 
     @Test func ownershipFactsFromSeededDB() throws {
@@ -171,7 +172,7 @@ private final class Fixture {
         let startedAt = Double(at(39, 12)), now = startedAt + 7200
         try f.db.exec("""
             INSERT INTO agent_runs VALUES(1, 'm1', 'claude', 10, 1000, \(at(39, 0)), \(at(39, 12, 2)));
-            INSERT INTO events VALUES('m1', \(at(39, 12) - 30), 'container_intent', '{"rootPid":"10","rootStart":"1000"}');
+            INSERT INTO events VALUES('m1', \(at(39, 12) - 30), 'container_intent', '{"rootPid":"10","rootStart":"1000","start":"true"}');
             """)
         let item = LeftoverItem(
             key: "e/container/c", engine: "e", kind: .container, name: "c", containerIDs: ["c"], sessionId: nil,

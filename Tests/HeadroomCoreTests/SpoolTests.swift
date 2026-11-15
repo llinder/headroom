@@ -33,7 +33,8 @@ private func makeSpool() throws -> (Spool, URL) {
         let records: [SpoolRecord] = [
             .agentWarning(ts: 5, trigger: .swapGrowing),
             .agentWarning(ts: 5.5, trigger: nil),
-            .containerIntent(ts: 6, rootPid: 77, rootStart: 1_700_000_000_000_000),
+            .containerIntent(ts: 6, rootPid: 77, rootStart: 1_700_000_000_000_000, start: false),
+            .containerIntent(ts: 7, rootPid: 77, rootStart: 1_700_000_000_000_000, start: true),
         ]
         for r in records { #expect(spool.append(r)) }
         _ = spool.drain()
@@ -48,6 +49,9 @@ private func makeSpool() throws -> (Spool, URL) {
         let leftovers = try JSONDecoder().decode(
             SpoolRecord.self, from: Data(#"{"trigger":"leftovers","ts":5,"type":"agentWarning"}"#.utf8))
         #expect(leftovers == .agentWarning(ts: 5, trigger: .leftovers))
+        let intent = try JSONDecoder().decode(
+            SpoolRecord.self, from: Data(#"{"rootPid":7,"rootStart":8,"ts":5,"type":"containerIntent"}"#.utf8))
+        #expect(intent == .containerIntent(ts: 5, rootPid: 7, rootStart: 8, start: false))
     }
 
     @Test func phase1RecorderSkipsNewRecords() throws {

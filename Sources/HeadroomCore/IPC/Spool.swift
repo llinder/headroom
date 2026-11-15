@@ -11,10 +11,12 @@ public enum SpoolRecord: Codable, Sendable, Equatable {
     case agentSession(ts: Double, tool: String, sessionId: String, model: String?, rootPid: Int32, rootStart: UInt64)
     /// `trigger` is nil in records written before it was added.
     case agentWarning(ts: Double, trigger: AdviceTrigger?)
-    case containerIntent(ts: Double, rootPid: Int32, rootStart: UInt64)
+    /// `start` marks commands that start containers, the only ones that can make a run an item's owner. It is
+    /// false in records written before it was added.
+    case containerIntent(ts: Double, rootPid: Int32, rootStart: UInt64, start: Bool)
 
     private enum CodingKeys: String, CodingKey {
-        case type, ts, text, exe, seconds, tool, sessionId, model, rootPid, rootStart, trigger
+        case type, ts, text, exe, seconds, tool, sessionId, model, rootPid, rootStart, trigger, start
     }
 
     private enum Kind: String, Codable {
@@ -48,7 +50,8 @@ public enum SpoolRecord: Codable, Sendable, Equatable {
             self = .containerIntent(
                 ts: try c.decode(Double.self, forKey: .ts),
                 rootPid: try c.decode(Int32.self, forKey: .rootPid),
-                rootStart: try c.decode(UInt64.self, forKey: .rootStart))
+                rootStart: try c.decode(UInt64.self, forKey: .rootStart),
+                start: try c.decodeIfPresent(Bool.self, forKey: .start) ?? false)
         }
     }
 
@@ -76,11 +79,12 @@ public enum SpoolRecord: Codable, Sendable, Equatable {
             try c.encode(Kind.agentWarning, forKey: .type)
             try c.encode(ts, forKey: .ts)
             try c.encodeIfPresent(trigger?.rawValue, forKey: .trigger)
-        case let .containerIntent(ts, rootPid, rootStart):
+        case let .containerIntent(ts, rootPid, rootStart, start):
             try c.encode(Kind.containerIntent, forKey: .type)
             try c.encode(ts, forKey: .ts)
             try c.encode(rootPid, forKey: .rootPid)
             try c.encode(rootStart, forKey: .rootStart)
+            try c.encode(start, forKey: .start)
         }
     }
 }
