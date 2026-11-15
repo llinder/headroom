@@ -37,7 +37,8 @@ An illustrative frame (the numbers are made up):
  Browsers                                                              4%    2.4G
 ```
 
-Keys: `q` quits, `g` toggles groups and processes, `a` toggles the agents pane.
+Keys: `q` quits, `g` toggles groups and processes, `a` toggles the agents pane,
+`l` toggles the leftovers pane (see [Abandoned containers](#abandoned-containers)).
 
 ## Install
 
@@ -58,11 +59,20 @@ directly.
 headroom install --agents
 ```
 
-Does everything `make install` does, then adds a `SessionStart` hook that runs
-`headroom agent-hook <claude|codex>` to:
+Does everything `make install` does, then adds two hooks:
+
+- `SessionStart`, which runs `headroom agent-hook <claude|codex>`;
+- `PreToolUse` on `Bash`, which runs `headroom agent-hook pretool <claude|codex>`
+  (see [Advice for agents](#advice-for-agents)),
+
+to:
 
 - `~/.claude/settings.json` (Claude Code), and
-- `~/.codex/hooks.json` (Codex).
+- `~/.codex/hooks.json` (Codex). Codex asks you to approve the new hooks the first
+  time it runs.
+
+It also registers the [MCP server](#mcp-server) with the `claude` and `codex`
+CLIs, when they are on your `PATH`.
 
 `install` copies the binaries from the directory of the `headroom` you run, and it
 doesn't build anything: run `make install` first, or `swift build -c release` and
@@ -74,9 +84,164 @@ it saves a copy next to it as `<name>.headroom-backup-<unix time>` with the
 original permissions. A file that can't be parsed is reported and left
 unchanged. It **never** touches `statusLine`.
 
-Hooks only add labels (session id, model) to agent runs. Runs are detected from
-the process tree, so tracking works without them. The hook always exits 0 and
-never fails an agent's action.
+The `SessionStart` hook only adds labels (session id, model) to agent runs. Runs
+are detected from the process tree, so tracking works without it. Both hooks
+always exit 0 and never fail an agent's action.
+
+## Advice for agents
+
+The `PreToolUse` hook gives an agent a short hint before it runs a shell command,
+when the machine is under pressure. It is **advice only**: the hook never allows,
+denies or changes a command, always exits 0, and prints nothing except the hint
+as `hookSpecificOutput.additionalContext`.
+
+It speaks up when the recorder's live state is fresh (under 60 s old) and any of
+these holds:
+
+- memory pressure is critical;
+- swap is growing by at least 256 MB/min (`agents.swapGrowthBytesPerMin` in
+  `config.json`; a value of 0 or less turns this trigger off);
+- abandoned containers hold at least 1 GB.
+
+The hint depends on the command. It suggests, for example, `go test -p 2` over a
+whole-module run, one build target at a time, or not starting another container
+or Kind cluster. When there are leftovers, it adds how many and how much memory
+they hold, and points to `headroom leftovers`. It never suggests `prune` or
+`compose down -v`.
+
+It is throttled per session and per subagent: at most one hint every 5 minutes
+(`agents.adviceMinutes`). Commands count as heavy by their prefix
+(`agents.heavyCommands`, which replaces the built-in list when set). The hook also
+notes when an agent runs `docker`, `kubectl`, `kind` or `helm`, without storing the
+command, so [leftover detection](#abandoned-containers) knows which agent session
+started a container.
+
+## Abandoned containers
+
+Containers keep running after the work that started them is over, and hold memory
+nobody is using. The recorder checks every 5 minutes. It looks at Docker engines
+reachable through the contexts in `~/.docker/contexts`, `/var/run/docker.sock`
+and a `unix://` `DOCKER_HOST`. It groups running containers into items: a Kind
+cluster, a Compose project, a Testcontainers session, or a single container.
+
+An item is flagged as a **leftover** when the agent session that started it is
+done, meaning it exited, or it has had no activity for 60 awake minutes
+(`leftovers.afterMinutes`), or when it was started by a test run whose
+Testcontainers reaper is gone. An item that no agent owns is flagged after 24
+hours (`leftovers.unownedAfterHours`). headroom never stops or removes anything. It
+shows the commands to do it yourself.
+
+```sh
+headroom leftovers [--json] [--kept]
+```
+
+lists the leftovers with their memory, age, cleanup commands and a `keep:` line
+with the command that stops flagging them. `--json` prints the items as JSON,
+and `--kept` also lists the items that are not flagged because they are kept or
+ignored. `headroom status` shows the engines found and when they were last
+checked, `headroom top` shows a leftovers pane with `l`, and the
+[status line](#status-line) shows a count.
+
+### Keeping a container
+
+Label a container with `io.github.llinder.headroom.lifetime` to say how long it
+should live:
+
+| Value | Meaning |
+|---|---|
+| `keep` | never flagged |
+| `temporary` | flagged once its owner has been idle for 5 minutes |
+| `<N>m`, `<N>h`, `<N>d` | flagged once it is older than that |
+
+```yaml
+services:
+  db:
+    image: postgres:16
+    labels:
+      io.github.llinder.headroom.lifetime: keep
+  scratch:
+    image: alpine:3
+    labels:
+      io.github.llinder.headroom.lifetime: 4h
+```
+
+For a Compose project the shortest lifetime among its containers applies, and
+`keep` wins over everything. To keep something you can't label, such as a Kind
+cluster, use the keep list:
+
+```sh
+headroom keep kind:dev              # a Kind cluster
+headroom keep compose:myapp         # a Compose project
+headroom keep myapp-db --for 7d     # a single container, for 7 days
+headroom keeps                      # list the keep list
+headroom unkeep myapp-db
+```
+
+The key is `kind:<cluster>`, `compose:<project>` or a container name. `--for`
+takes `<N>m`, `<N>h` or `<N>d`; without it the entry never expires. The keep
+list is `keeps.json` in the data directory, and it takes precedence over labels.
+
+### Built-in ignores
+
+These are never flagged: BuildKit builders (`moby/buildkit`), local registries
+(`registry:*`, `kind-registry`), the Testcontainers reaper, Kubernetes pods, and
+Testcontainers containers with `org.testcontainers.reuse.enable=true`. Add your own
+in `config.json`; each key is a list of patterns (`*` wildcards). `labels` takes
+`key` or `key=value`.
+
+```json
+{
+  "leftovers": {
+    "afterMinutes": 60,
+    "unownedAfterHours": 24,
+    "ignore": { "names": ["myapp-db"], "images": ["registry:*"], "labels": [] }
+  }
+}
+```
+
+Container, project and cluster names are kept in `leftovers.json` and
+`keeps.json` only. They never go into the database or a report.
+
+## MCP server
+
+```sh
+headroom mcp
+```
+
+Runs a read-only [MCP](https://modelcontextprotocol.io) server on stdio, so an
+agent can ask about the machine. `headroom install --agents` registers it as
+`headroom` with the `claude` and `codex` CLIs when they are on your `PATH`
+(`headroom uninstall` removes it). To register it by hand:
+
+```sh
+claude mcp add --scope user headroom -- ~/.local/bin/headroom mcp
+codex mcp add headroom -- ~/.local/bin/headroom mcp
+```
+
+Tools:
+
+- `current_status`: live CPU, memory, swap and pressure; today's time at a limit;
+  the busiest workload groups and processes; running agent sessions; and
+  leftover containers with their cleanup commands.
+- `query_metric`: `metric` (`cpuBusy`, `load1`, `memUsed`, `memApp`,
+  `memCompressed`, `swapUsed`, `memDemand`, `ssdWrite`, `diskFree`,
+  `activeAgents`), `from`, optional `to` (default now) and `resolution`
+  (`minute`, `hour` or `auto`, the default). It returns avg, max and p95, at most
+  500 points.
+- `explain_slowdown`: `at` and optional `windowMinutes` (1 to 1440, default 30).
+  It returns what limited the machine around that moment, peak demand, the
+  biggest workload groups, agent sessions, leftovers and events.
+
+Times are ISO 8601 (local time when there is no offset), `YYYY-MM-DD`, `now`, or
+relative: `-30m`, `-2h`, `-1d`.
+
+The server only reads the database and the state files. It writes nothing and
+starts nothing.
+
+**Privacy note:** tool output goes to your agent, and so to its model provider.
+That includes process names and, in `current_status`, the names of leftover
+containers and their cleanup commands. If that is a problem, don't register the
+server (or run `claude mcp remove headroom` / `codex mcp remove headroom`).
 
 ## Status line
 
@@ -84,7 +249,7 @@ never fails an agent's action.
 current, without opening the database:
 
 ```
-mem 83% ⚠ swap 8G · cpu 46% · disk 425G · 2 agents
+mem 83% ⚠ swap 8G · cpu 46% · disk 425G · 2 agents · ⚑ 2 leftovers · 3.4 GB
 ```
 
 Memory turns amber at pressure warn and red at critical (`--no-color` turns
@@ -92,7 +257,9 @@ colour off). If the recorder isn't running (the file is older than 60 s) it
 prints `headroom: off`, or nothing with `--quiet`. It never reads stdin and
 always exits 0.
 
-Options: `--format "{mem} {swap} · {cpu} · {disk} · {agents}"` (this is the
+The `⚑` segment only appears while there are abandoned containers
+(`{leftovers}`: count and memory held). Options:
+`--format "{mem} {swap} · {cpu} · {disk} · {agents} · {leftovers}"` (this is the
 default; segments are separated by ` · ` and an empty one is dropped),
 `--no-color`, `--quiet`.
 
@@ -152,11 +319,13 @@ The PDF is US Letter, rendered natively, with wording from deterministic rules
 
 - `headroom status` shows recorder health, the machine, days recorded, coverage
   of awake time and gaps, database size, the recorder's own average CPU and
-  peak memory over the last 24 h, and whether agent hooks are installed.
+  peak memory over the last 24 h, whether agent hooks are installed, and the
+  Docker engines checked for leftovers.
 - `headroom tag "<note>"` adds a timestamped note that appears as a marker on the
   report charts. Use `--` first if the text starts with dashes.
 - `headroom top` is the live terminal view shown above (also the default when you
   run `headroom` with no arguments). Piped, it prints a single frame.
+- `headroom leftovers`, `keep`, `unkeep`, `keeps` and `mcp` are described above.
 - `headroom version`, `headroom help`.
 
 ## Configuration
@@ -172,6 +341,8 @@ one is ignored with a warning, never overwritten.
 | `groups.json` | your own workload rules, matched before the built-in ones (never written by headroom) |
 | `tiers.json` | the configurations a recommendation rounds up to |
 | `baseline.json` | an optional reference workload for the comparison page |
+| `keeps.json` | the keep list, written by `headroom keep` |
+| `leftovers.json` | the current leftovers, written by the recorder |
 
 **`config.json`** defaults (any key you omit keeps its default):
 
@@ -189,9 +360,17 @@ one is ignored with a warning, never overwritten.
   "agentActiveCoreFraction": 0.05,
   "capacityMaxLimitedShare": 0.05,
   "capacityMinSecondsPerLevel": 3600,
-  "capacityMinTotalSeconds": 18000
+  "capacityMinTotalSeconds": 18000,
+  "agents": {
+    "adviceMinutes": 5,
+    "swapGrowthBytesPerMin": 268435456
+  },
+  "leftovers": { "afterMinutes": 60, "unownedAfterHours": 24 }
 }
 ```
+
+(`agents.heavyCommands` and `leftovers.ignore` are also read from here; see
+[Advice for agents](#advice-for-agents) and [Abandoned containers](#abandoned-containers).)
 
 A workday is a day with at least 2 hours awake. CPU is saturated at 90% total
 or a 1-minute load of 2x the core count. A run counts as active when its process
@@ -272,8 +451,12 @@ headroom records what the machine is doing, never what the person is doing.
   `headroom top` reads an agent's directory name live and keeps it in memory.
 - Hang and jetsam events store no file names. Shell commands are recorded as a
   name and a duration only.
-- All data stays on the machine. headroom makes no network calls, sends no
-  telemetry and uses no LLM. It runs as your user, without root.
+- Container, project and cluster names stay in two local files and never reach
+  the database or a report.
+- All data stays on the machine. headroom makes no network calls (it only talks to
+  local Docker sockets), sends no telemetry and uses no LLM. It runs as your user,
+  without root. The one way data leaves is through your own agent, if you register
+  the MCP server (see its privacy note).
 
 ## Footprint
 
@@ -302,8 +485,8 @@ headroom uninstall
 
 Stops and removes the LaunchAgent, deletes `headroom` and `headroomd` from
 `~/.local/bin`, and removes only headroom's own hook entries from
-`~/.claude/settings.json` and `~/.codex/hooks.json` (saving a backup first). Your
-data in `~/Library/Application Support/headroom/` is kept; delete that directory
+`~/.claude/settings.json` and `~/.codex/hooks.json` (saving a backup first), and
+unregisters the MCP server. Your data in `~/Library/Application Support/headroom/` is kept; delete that directory
 to remove the history. Remove the `headroom hook zsh` lines from `~/.zshrc` and any
 status-line setting you added by hand.
 

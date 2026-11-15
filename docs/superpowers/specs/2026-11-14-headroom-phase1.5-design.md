@@ -262,3 +262,19 @@ Paths are resolved through symlinks and deduplicated, keeping the first context 
 - The Testcontainers reuse label, and how to detect a reaper per `sessionId`.
 - HTTP client details.
 - Whether a 5-minute poll keeps an idle OrbStack VM awake (measure it; if it does, poll only while an agent run is live or pressure isn't normal).
+
+## Verified during implementation
+
+**Hook JSON (`PreToolUse`).**
+- Input, for both Claude Code and Codex: `session_id`, `tool_name` and `tool_input.command` for Bash. Claude Code adds `agent_id` when the session uses `--agent` or the hook fires inside a subagent. Codex sends no `agent_id` on `PreToolUse`, so Codex advice is throttled per session only.
+- Output, for both: `{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"<text>"}}` on one line, with exit 0. No `permissionDecision` and no other field is emitted; Codex marks a hook run as failed when it sees fields such as `continue` or `stopReason`. Plain stdout is ignored by Codex.
+- Codex asks the user to trust newly added hooks, so `install --agents` prints a note.
+
+**MCP protocol.**
+- Spec revisions published are 2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25 and 2026-07-28. The server implements the `initialize` handshake and negotiates 2024-11-05 through 2025-11-25: a requested version in that set is echoed, anything else gets 2025-11-25.
+- 2026-07-28 drops the handshake (per-request `_meta`, `server/discover`). A client that supports only 2026-07-28 is not supported. Dual-era clients probe with `server/discover`, get -32601, and fall back to `initialize`. The installed Claude Code and Codex CLIs both do this.
+
+**CLI flags.**
+- `claude mcp add --scope user headroom -- <exe> mcp`, and `claude mcp remove --scope user headroom`. `--scope` is `local`, `user` or `project`.
+- `codex mcp add headroom -- <exe> mcp`, and `codex mcp remove headroom`. Codex has no scope flag: its config is per user.
+- `mcp list` is used to detect an existing registration: the first field of a line must equal `headroom` (or `headroom:`), because a substring match would skip registration when another server's path contains the word.
