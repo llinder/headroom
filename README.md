@@ -503,6 +503,10 @@ unregisters the MCP server. Your data in `~/Library/Application Support/headroom
 to remove the history. Remove the `headroom hook zsh` lines from `~/.zshrc` and any
 status-line setting you added by hand.
 
+To go back to an earlier version, run `headroom uninstall` with the current binary
+first, then install the older one. The 0.1 `headroom uninstall` doesn't know the
+`PreToolUse` advice hook and would leave it in your agent settings.
+
 ## License
 
 MIT

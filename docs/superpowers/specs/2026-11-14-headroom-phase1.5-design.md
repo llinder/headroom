@@ -149,7 +149,7 @@ Paths are resolved through symlinks and deduplicated, keeping the first context 
 - **Unversioned API paths:**
   - `GET /containers/json` gives id, names, image, labels and state;
   - `GET /containers/{id}/json` gives `State.StartedAt`, fetched only for candidates;
-  - `GET /containers/{id}/stats?stream=false&one-shot=true` gives memory, only for candidates. Memory is `usage - inactive_file` and is reported as an estimate.
+  - `GET /containers/{id}/stats?stream=false&one-shot=true` gives memory, only for candidates. Memory is `usage - inactive_file` (`total_inactive_file` on cgroup v1).
 
 **Execution.**
 - The pass runs on its own serial background queue.
@@ -173,7 +173,7 @@ The `DOCKER_HOST` engine (context `env`) has no Docker context, so its commands 
 **Lifetime: labels and the keep list.**
 - **Label.** `io.github.llinder.headroom.lifetime` on any container in the item can be:
   - `keep` (never flagged);
-  - `temporary` (flagged as soon as its owner is done);
+  - `temporary` (flagged once its owner is done, where done means 5 idle awake minutes instead of `leftovers.afterMinutes`, or exited);
   - a duration such as `8h` or `7d` (flagged once older than that, measured from start).
 
   For compose stacks, any service's label counts, and the shortest lifetime wins.
@@ -196,7 +196,7 @@ The `DOCKER_HOST` engine (context `env`) has no Docker context, so its commands 
 
 **State.**
 - **Sidecar file.** Current leftovers live in `Application Support/headroom/leftovers.json`. It's written by temp file plus atomic rename, like `live.state`, and holds:
-  - the engine context, kind, name, start time, owner state, memory estimate and cleanup command per item;
+  - the engine context, kind, name, start time, reason, memory and cleanup commands per item;
   - the last-pass time and status per engine.
 
   It's local-only and is never copied into SQLite.
@@ -217,7 +217,7 @@ The `DOCKER_HOST` engine (context `env`) has no Docker context, so its commands 
 
 **Surfaces.**
 - **Status line:** a `{leftovers}` token renders `⚑ 2 leftovers · 3.1 GB`, or nothing. It's in the default template. While the memory isn't known yet, the size is left out (`⚑ 2 leftovers`) rather than shown as 0.0 GB; the MCP `current_status` summary does the same.
-- **`top`:** the same marker in the header, plus an `l` pane listing engine, kind, name, owner state, memory and cleanup.
+- **`top`:** the same marker in the header, plus an `l` pane with the columns kind, name, reason, memory and age. The reason is dropped first on a narrow terminal.
 - **`headroom leftovers` (with `--json`):** lists everything with copy-pasteable commands. A `--kept` flag shows kept and ignored items too, so you can see why something isn't flagged.
 - **`headroom keep` / `unkeep` / `keeps`:** manage the keep list.
 - **Report appendix:** two lines, with no names:
