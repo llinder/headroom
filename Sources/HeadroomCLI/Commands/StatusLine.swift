@@ -25,7 +25,9 @@ public enum StatusLineFormatter {
         var leftovers = ""
         if s.leftoverCount > 0 {
             let tenths = roundedInt(Double(s.leftoverBytes) / 1e8, upTo: 1e12)
-            leftovers = "⚑ \(s.leftoverCount) leftover\(s.leftoverCount == 1 ? "" : "s") · \(tenths / 10).\(tenths % 10) GB"
+            leftovers = "⚑ \(s.leftoverCount) leftover\(s.leftoverCount == 1 ? "" : "s")"
+            // Memory is read a pass after the flag, so zero usually means not read yet; "0.0 GB" would claim it's empty.
+            if tenths > 0 { leftovers += " · \(tenths / 10).\(tenths % 10) GB" }
         }
 
         // Substituting per segment means an empty token drops its whole segment instead of

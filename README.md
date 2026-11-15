@@ -260,7 +260,8 @@ prints `headroom: off`, or nothing with `--quiet`. It never reads stdin and
 always exits 0.
 
 The `⚑` segment only appears while there are abandoned containers
-(`{leftovers}`: count and memory held). Options:
+(`{leftovers}`: count and memory held; the memory is left out until it has
+been read). Options:
 `--format "{mem} {swap} · {cpu} · {disk} · {agents} · {leftovers}"` (this is the
 default; segments are separated by ` · ` and an empty one is dropped),
 `--no-color`, `--quiet`.

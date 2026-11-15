@@ -222,6 +222,19 @@ private final class MCPFixture {
         #expect(result.body["leftovers"]?["items"]?.arrayValue?.count == 50)
     }
 
+    @Test func unknownLeftoverMemoryIsLeftOutOfTheSummary() throws {
+        let f = try MCPFixture()
+        let item = FlaggedItem(
+            item: LeftoverItem(
+                key: "default/container/c", engine: "default", kind: .container, name: "c", containerIDs: ["id"],
+                sessionId: nil, lifetime: nil, cleanup: []),
+            startedAt: now - 100, reason: "done", memoryBytes: nil, firstFlagged: now)
+        try LeftoverState(updated: now, items: [item]).save(to: f.paths.leftovers)
+        let result = try f.call("current_status")
+        #expect(result.summary.hasSuffix(" · 1 leftover"), "\(result.summary)")
+        #expect(!result.summary.contains("GB)"))
+    }
+
     @Test func missingDatabaseIsToolError() throws {
         let f = try MCPFixture(seed: false)
         let result = try f.call("current_status")

@@ -136,7 +136,9 @@ private let binary: URL? = {
 
     @Test func leftoversTokenSingularPlural() {
         #expect(render(snapshot(leftovers: 1, leftoverBytes: 1_250_000_000), template: "{leftovers}") == "⚑ 1 leftover · 1.3 GB")
-        #expect(render(snapshot(leftovers: 3, leftoverBytes: 0), template: "{leftovers}") == "⚑ 3 leftovers · 0.0 GB")
+        #expect(render(snapshot(leftovers: 3, leftoverBytes: 0), template: "{leftovers}") == "⚑ 3 leftovers")
+        #expect(render(snapshot(leftovers: 1, leftoverBytes: 0), template: "{leftovers}") == "⚑ 1 leftover",
+                "memory not read yet is left out, not shown as 0.0 GB")
     }
 
     @Test func leftoversTokenClampsHugeBytes() {

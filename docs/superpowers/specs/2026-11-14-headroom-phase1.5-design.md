@@ -88,7 +88,7 @@ The advice is given on **any** shell command while a trigger holds, rate-limited
 
 - When the command matches a heavy pattern, the sentence is specific. For a `go` match: "prefer `go test -p 2 ./<package>/...` over the whole module". There are also `container`, `build` and `js` variants.
 - Otherwise it is general: "memory pressure is critical (swap 14 GB, +0.6 GB/min); prefer narrow builds and tests, and avoid starting containers or clusters right now".
-- If leftovers hold memory, it adds: "2 abandoned containers hold 3.1 GB; see `headroom leftovers`".
+- If leftovers hold memory, it adds: "2 abandoned containers hold 3.1 GB; see `headroom leftovers`". While their memory isn't known yet it says "2 abandoned containers are still running; see `headroom leftovers`" instead.
 
 **Heavy patterns** come from `agents.heavyCommands`. Commands are split on newlines, `&&`, `||`, `;` and `|`. Leading `NAME=value`, `time`, `env` and `sudo` are dropped before matching. Defaults:
 
@@ -214,7 +214,7 @@ Paths are resolved through symlinks and deduplicated, keeping the first context 
 | 88 | `swapGrowthBytesPerMin` i64 (swap now minus 60 s ago) |
 
 **Surfaces.**
-- **Status line:** a `{leftovers}` token renders `⚑ 2 leftovers · 3.1 GB`, or nothing. It's in the default template.
+- **Status line:** a `{leftovers}` token renders `⚑ 2 leftovers · 3.1 GB`, or nothing. It's in the default template. While the memory isn't known yet, the size is left out (`⚑ 2 leftovers`) rather than shown as 0.0 GB; the MCP `current_status` summary does the same.
 - **`top`:** the same marker in the header, plus an `l` pane listing engine, kind, name, owner state, memory and cleanup.
 - **`headroom leftovers` (with `--json`):** lists everything with copy-pasteable commands. A `--kept` flag shows kept and ignored items too, so you can see why something isn't flagged.
 - **`headroom keep` / `unkeep` / `keeps`:** manage the keep list.

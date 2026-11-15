@@ -112,6 +112,12 @@ import Testing
     @Test func adviceTextFormatsNegativeGrowthAndLeftoverSuffix() {
         let neg = snap(swapUsed: 1_500_000_000, growth: -260_000_000)
         #expect(PreToolAdvice.text(trigger: .swapGrowing, kind: .js, snapshot: neg).hasPrefix("headroom: swap is growing fast (-0.3 GB/min, 1.5 GB used)."))
+        let unknown = snap(leftoverCount: 1, leftoverBytes: 0)
+        #expect(PreToolAdvice.text(trigger: .leftovers, kind: .build, snapshot: unknown)
+            == "headroom: memory is tight. Prefer building one target at a time. 1 abandoned container is still running; see headroom leftovers.")
+        let unknownMany = snap(leftoverCount: 3, leftoverBytes: 0)
+        #expect(PreToolAdvice.text(trigger: .critical, kind: nil, snapshot: unknownMany)
+            .hasSuffix(" 3 abandoned containers are still running; see headroom leftovers."))
         let one = snap(leftoverCount: 1, leftoverBytes: 1_200_000_000)
         #expect(PreToolAdvice.text(trigger: .leftovers, kind: .build, snapshot: one)
             == "headroom: memory is tight. Prefer building one target at a time. 1 abandoned container holds 1.2 GB; see headroom leftovers.")

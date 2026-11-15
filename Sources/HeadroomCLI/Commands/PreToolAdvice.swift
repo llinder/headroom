@@ -95,8 +95,13 @@ enum PreToolAdvice {
         case nil: out += " Prefer narrow builds and tests, and avoid starting containers or clusters right now."
         }
         if s.leftoverCount > 0 {
-            let noun = s.leftoverCount == 1 ? "abandoned container holds" : "abandoned containers hold"
-            out += " \(s.leftoverCount) \(noun) \(gb(Double(s.leftoverBytes))) GB; see headroom leftovers."
+            let one = s.leftoverCount == 1
+            let held = gb(Double(s.leftoverBytes))
+            // Zero usually means the memory isn't read yet, so no size is claimed.
+            let what = held == "0.0"
+                ? (one ? "abandoned container is still running" : "abandoned containers are still running")
+                : (one ? "abandoned container holds \(held) GB" : "abandoned containers hold \(held) GB")
+            out += " \(s.leftoverCount) \(what); see headroom leftovers."
         }
         return out
     }

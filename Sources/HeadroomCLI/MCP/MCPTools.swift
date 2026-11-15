@@ -431,7 +431,10 @@ enum MCPTools {
         }
         if leftovers.count > 0 {
             let plural = leftovers.count == 1 ? "" : "s"
-            summary += " · \(leftovers.count) leftover\(plural) (\(gigabytes(Double(leftovers.totalBytes))) GB)"
+            summary += " · \(leftovers.count) leftover\(plural)"
+            // Memory not read yet is zero, and "(0.0 GB)" would claim the containers hold nothing.
+            let held = gigabytes(Double(leftovers.totalBytes))
+            if held != "0.0" { summary += " (\(held) GB)" }
         }
         return (summary, encode(out))
     }
