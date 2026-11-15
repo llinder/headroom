@@ -72,6 +72,23 @@ private func flagged(memory: UInt64?, started: Double) -> FlaggedItem {
         #expect(box.out == ["no abandoned containers"])
     }
 
+    @Test func keptListsBuiltInIgnores() throws {
+        let box = try Sandbox()
+        let running = [
+            DockerContainer(id: "b1", names: ["buildx_buildkit_default0"], image: "moby/buildkit:v0", labels: [:], state: "running"),
+            DockerContainer(id: "r1", names: ["registry"], image: "registry.corp.example:5000/registry:2", labels: [:], state: "running"),
+        ]
+        let ignored = LeftoverGrouper.group(running, engine: "orb", ignore: IgnoreRules()).ignored
+        try LeftoverState(kept: ignored).save(to: box.paths.leftovers)
+        _ = Leftovers.run(paths: box.paths, now: now, json: false, kept: true) { box.out.append($0) }
+        #expect(box.out == [
+            "no abandoned containers",
+            "orb/container/buildx_buildkit_default0 · kept (built-in ignore)",
+            "orb/container/registry · kept (built-in ignore)",
+        ])
+        #expect(!box.out.joined().contains("corp.example"))
+    }
+
     @Test func keepAddsEntryWithExpiry() throws {
         let box = try Sandbox()
         #expect(Leftovers.keep(name: "a", forSeconds: 3600, paths: box.paths, now: now, out: { box.out.append($0) }, err: { box.err.append($0) }) == 0)

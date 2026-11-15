@@ -424,6 +424,38 @@ private func wallNow() -> Double { Date().timeIntervalSince1970 }
         #expect(!server.requests.contains("/containers/\(keptByList.id)/json"), "kept items are never inspected")
     }
 
+    /// Built-in ignores show up in `kept` so `--kept` can explain them, and change nothing else about the pass.
+    @Test func builtInIgnoresAreKeptWithoutChangingFlagging() throws {
+        let now = wallNow()
+        let orphan = Box(id: hexID(3), name: "orphan", startedAt: now - 2 * day, usage: 10 << 20)
+        let builder = Box(id: hexID(4), name: "buildx_buildkit_default0", image: "moby/buildkit:buildx-stable-1", startedAt: now - 2 * day)
+        let registry = Box(id: hexID(5), name: "registry", image: "registry.corp.example:5000/registry:2", startedAt: now - 2 * day)
+        let plain = try FakeUnixHTTPServer(routes: engineRoutes([orphan]))
+        let mixed = try FakeUnixHTTPServer(routes: engineRoutes([orphan, builder, registry]))
+        defer { plain.stop(); mixed.stop() }
+        let db = try TempDB()
+
+        let without = monitor([("default", plain)]).pass(
+            previous: LeftoverState(), facts: db.facts(now: now), keeps: KeepList(), now: now, deadline: wallNow() + 10)
+        let with = monitor([("default", mixed)]).pass(
+            previous: LeftoverState(), facts: db.facts(now: now), keeps: KeepList(), now: now, deadline: wallNow() + 10)
+
+        #expect(with.state.kept == [
+            KeptItem(key: "default/container/buildx_buildkit_default0", why: "built-in ignore"),
+            KeptItem(key: "default/container/registry", why: "built-in ignore"),
+        ])
+        #expect(without.state.kept.isEmpty)
+        #expect(with.state.items == without.state.items)
+        #expect(with.state.totalBytes == without.state.totalBytes)
+        #expect(with.events.map(\.kind) == without.events.map(\.kind))
+        #expect(with.events.map(\.payload) == without.events.map(\.payload))
+        for id in [builder.id, registry.id] {
+            #expect(!mixed.requests.contains { $0.contains(id) }, "ignored containers are never inspected or measured")
+        }
+        let encoded = String(decoding: try JSONEncoder().encode(with.state.kept), as: UTF8.self)
+        #expect(!encoded.contains("corp.example"))
+    }
+
     @Test func sidecarRoundTripAndAtomic() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("headroom-lo-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

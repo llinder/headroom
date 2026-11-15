@@ -103,10 +103,13 @@ public enum LeftoverGrouper {
         var members: [DockerContainer] = []
     }
 
+    /// `ignored` lists running containers skipped by a built-in or configured ignore, so `--kept` can explain why
+    /// they aren't flagged. Each is named by key alone: the image reference can carry a private registry host.
     public static func group(
         _ containers: [DockerContainer], engine: String, ignore: IgnoreRules
-    ) -> (items: [LeftoverItem], reapers: Set<String>) {
+    ) -> (items: [LeftoverItem], reapers: Set<String>, ignored: [KeptItem]) {
         var reapers = Set<String>()
+        var ignored: [KeptItem] = []
         var order: [String] = []
         var buckets: [String: Bucket] = [:]
 
@@ -115,7 +118,11 @@ public enum LeftoverGrouper {
                let session = c.labels[tcSessionLabel] {
                 reapers.insert(session)
             }
-            if ignored(c, builtIn) || ignored(c, ignore) { continue }
+            let why = matches(c, builtIn) ? "built-in ignore" : matches(c, ignore) ? "ignore rule" : nil
+            if let why {
+                ignored.append(KeptItem(key: "\(engine)/container/\(c.names.first ?? String(c.id.prefix(12)))", why: why))
+                continue
+            }
 
             let bucket: Bucket
             if let cluster = c.labels[kindLabel] {
@@ -145,10 +152,10 @@ public enum LeftoverGrouper {
                 cleanup: cleanup(kind: b.kind, name: b.name, engine: engine, members: b.members),
                 containerNames: b.members.flatMap(\.names))
         }
-        return (items, reapers)
+        return (items, reapers, ignored)
     }
 
-    private static func ignored(_ c: DockerContainer, _ rules: IgnoreRules) -> Bool {
+    private static func matches(_ c: DockerContainer, _ rules: IgnoreRules) -> Bool {
         if c.names.contains(where: { n in rules.names.contains { Classifier.globMatches($0, n) } }) { return true }
         if rules.images.contains(where: { Classifier.globMatches($0, c.image) }) { return true }
         return rules.labels.contains { rule in

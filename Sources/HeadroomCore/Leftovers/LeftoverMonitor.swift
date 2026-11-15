@@ -48,6 +48,7 @@ public struct LeftoverMonitor: Sendable {
         var listed: [LeftoverItem] = []
         var carriedEngines = Set<String>()
         var reapers = Set<String>()
+        var ignored: [KeptItem] = []
 
         for engine in engines() {
             let before = previousStatus[engine.context]
@@ -64,6 +65,7 @@ public struct LeftoverMonitor: Sendable {
                 let grouped = LeftoverGrouper.group(containers, engine: engine.context, ignore: config.ignore)
                 listed += grouped.items
                 reapers.formUnion(grouped.reapers)
+                ignored += grouped.ignored
                 statuses.append(EngineStatus(context: engine.context, socket: engine.socketPath, lastPass: now, ok: true, failures: 0))
             case .failure(let error):
                 if error != .refused && failures <= Self.maxTransientFailures { carriedEngines.insert(engine.context) }
@@ -85,6 +87,8 @@ public struct LeftoverMonitor: Sendable {
                 candidates.append(item)
             }
         }
+        // Ignored containers never become candidates, so listing them here changes no flag, count or event.
+        kept += ignored
 
         // Keyed by container, not item: `compose down && up` or a Kind recreate keeps the item key with new containers.
         var starts = previous.starts

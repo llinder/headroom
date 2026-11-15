@@ -100,6 +100,36 @@ struct LeftoverItemsTests {
         #expect(r.items.map(\.name) == ["four"])
     }
 
+    /// `--kept` explains why a running container isn't flagged. Ignored containers are named by key only: an image
+    /// reference can carry a private registry host, so it never reaches the reason.
+    @Test func ignoredContainersAreReportedWithoutImages() {
+        let cs = [
+            c("b1", "buildx_buildkit_default0", image: "moby/buildkit:buildx-stable-1"),
+            c("r1", "registry", image: "registry.corp.example:5000/registry:2"),
+            c("y1", "testcontainers-ryuk-abc", image: "testcontainers/ryuk:0.5"),
+            c("p1", "k8s_web", labels: ["io.kubernetes.pod.name": "web"]),
+            c("u1", "tmp-x"),
+            c("s1", "scratch"),
+            c("x1", "buildx_buildkit_old", image: "moby/buildkit:old", state: "exited"),
+        ]
+        let r = LeftoverGrouper.group(cs, engine: "orb", ignore: IgnoreRules(names: ["tmp-*"]))
+        #expect(r.items.map(\.name) == ["scratch"])
+        #expect(r.ignored == [
+            KeptItem(key: "orb/container/buildx_buildkit_default0", why: "built-in ignore"),
+            KeptItem(key: "orb/container/registry", why: "built-in ignore"),
+            KeptItem(key: "orb/container/testcontainers-ryuk-abc", why: "built-in ignore"),
+            KeptItem(key: "orb/container/k8s_web", why: "built-in ignore"),
+            KeptItem(key: "orb/container/tmp-x", why: "ignore rule"),
+        ])
+        #expect(!r.ignored.contains { $0.key.contains("corp") || $0.why.contains("corp") || $0.why.contains("buildkit") })
+    }
+
+    @Test func unnamedIgnoredContainerFallsBackToShortId() {
+        let unnamed = DockerContainer(id: String(repeating: "ab", count: 32), names: [], image: "registry:2", labels: [:], state: "running")
+        let r = LeftoverGrouper.group([unnamed], engine: "e", ignore: IgnoreRules())
+        #expect(r.ignored == [KeptItem(key: "e/container/abababababab", why: "built-in ignore")])
+    }
+
     @Test func lifetimeParsing() {
         #expect(Lifetime(label: "keep") == .keep)
         #expect(Lifetime(label: "temporary") == .temporary)
