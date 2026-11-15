@@ -15,7 +15,7 @@ enum Leftovers {
         if state.items.isEmpty { out("no abandoned containers") }
         for flagged in state.items {
             let item = flagged.item
-            let memory = flagged.memoryBytes.map(memoryText) ?? "memory unknown"
+            let memory = flagged.memoryBytes.map(TopRenderer.memoryText) ?? "memory unknown"
             let age = TopRenderer.age(now.timeIntervalSince1970 - flagged.startedAt)
             out("\(item.engine)/\(item.kind.rawValue) \(item.name) · \(flagged.reason) · \(memory) · up \(age)")
             for command in item.cleanup { out("  \(command)") }
@@ -108,11 +108,5 @@ enum Leftovers {
             return 1
         }
         return 0
-    }
-
-    private static func memoryText(_ bytes: UInt64) -> String {
-        guard bytes >= 1_000_000_000 else { return "\(bytes / 1_000_000) MB" }
-        let tenths = TopRenderer.clampedInt((Double(bytes) / 1e8).rounded(), upTo: 1e12)
-        return "\(tenths / 10).\(tenths % 10) GB"
     }
 }

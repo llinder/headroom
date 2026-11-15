@@ -275,6 +275,52 @@ private func fullText(_ doc: PDFDocument) -> String {
         #expect(m.appendix.agentCPUHours == 1)
     }
 
+    @Test func appendixAdviceAndLeftoverLines() throws {
+        let f = try ReportFixture()
+        func appendixText() throws -> String {
+            let doc = try f.render(try f.model(baseline: nil))
+            return text(doc.page(at: doc.pageCount - 1))
+        }
+        let quiet = try appendixText()
+        #expect(!quiet.contains("advised to narrow work"))
+        #expect(!quiet.contains("Abandoned containers"))
+
+        let id = thisMachine.machineId
+        for ts in [at(4, 9), at(4, 10)] {
+            try f.exec("INSERT INTO events VALUES('\(id)', \(ts), 'agent_warning', '{}')")
+        }
+        try f.exec(#"INSERT INTO events VALUES('\#(id)', \#(at(5, 9)), 'leftover', '{"kind":"compose","ref":"aa","bytes":"1500000000","totalBytes":"1500000000"}')"#)
+        try f.exec(#"INSERT INTO events VALUES('\#(id)', \#(at(5, 10)), 'leftover', '{"kind":"kind","ref":"bb","bytes":"1000000000","totalBytes":"2500000000"}')"#)
+        try f.exec(#"INSERT INTO events VALUES('\#(id)', \#(at(5, 11)), 'leftover_cleared', '{"kind":"kind","ref":"bb","bytes":"1000000000","totalBytes":"1500000000"}')"#)
+        try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 12)), 'leftover', 'not json')")
+        let m = try f.model(baseline: nil)
+        #expect(m.appendix.agentWarnings == 2)
+        let loud = try appendixText()
+        #expect(loud.contains("Agents were advised to narrow work 2 times while memory was critical."))
+        #expect(loud.contains("Abandoned containers held up to 2.5 GB at their peak."))
+
+        let queries = Queries(db: f.db)
+        let from = Date(timeIntervalSince1970: Double(at(5, 11)))
+        let to = Date(timeIntervalSince1970: Double(at(5, 12)))
+        #expect(try queries.leftoverPeakBytes(machineId: id, from: from, to: to) == 1_500_000_000)
+        #expect(try queries.leftoverPeakBytes(machineId: id, from: to.addingTimeInterval(86_400), to: to.addingTimeInterval(172_800)) == nil)
+    }
+
+    @Test func privacyNoContainerNamesInPDF() throws {
+        let f = try ReportFixture()
+        let id = thisMachine.machineId
+        try f.exec("INSERT INTO events VALUES('\(id)', \(at(5, 9)), 'agent_warning', '{}')")
+        try f.exec(#"INSERT INTO events VALUES('\#(id)', \#(at(5, 9)), 'leftover', '{"kind":"compose","ref":"aa","bytes":"1500000000","totalBytes":"1500000000"}')"#)
+        let item = LeftoverItem(
+            key: "docker/compose:zebra-checkout-svc", engine: "docker", kind: .compose, name: "zebra-checkout-svc",
+            containerIDs: ["abc"], sessionId: nil, lifetime: nil, cleanup: [], containerNames: ["zebra-checkout-svc-web-1"])
+        try LeftoverState(items: [FlaggedItem(item: item, startedAt: 0, reason: "no owner", memoryBytes: 1_500_000_000, firstFlagged: 0)])
+            .save(to: f.paths.leftovers)
+        let all = fullText(try f.render(try f.model(baseline: baseline)))
+        #expect(all.contains("Abandoned containers held up to 1.5 GB"))
+        #expect(!all.contains("zebra"))
+    }
+
     @Test func growthMeasuredOnceForVerdictAndSpec() throws {
         let f = try ReportFixture(days: 5, secondMachine: false)
         let m = try f.model(baseline: nil)

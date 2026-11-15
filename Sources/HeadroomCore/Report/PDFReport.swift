@@ -214,6 +214,15 @@ public enum PDFReport {
             "Thermal slowdowns (serious or worse): \(a.thermalSlowdowns). Apps closed by macOS to free memory: \(a.events["jetsam"] ?? 0). "
                 + "Apps that stopped responding: \(a.events["hang"] ?? 0).", body)
 
+        if a.agentWarnings > 0 {
+            c.text(
+                "Agents were advised to narrow work \(Wording.plural(a.agentWarnings, "time")) while memory was critical.", body, after: 2)
+        }
+        if a.leftoverPeakGB > 0 {
+            c.text("Abandoned containers held up to \(Wording.decimal(a.leftoverPeakGB, places: 1)) GB at their peak.", body, after: 2)
+        }
+        c.space(4)
+
         c.text("Method and thresholds", bodyBold, after: 3)
         for line in a.thresholds { c.text("• " + line, body, after: 2) }
         c.text(a.workdayDefinition, body, after: 2)

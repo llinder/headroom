@@ -18,6 +18,9 @@ public struct Appendix: Sendable {
     public var ssdWriteTBPerYear: Double
     public var events: [String: Int]
     public var thermalSlowdowns: Int
+    public var agentWarnings: Int
+    /// Largest memory held by flagged containers at once; zero when none were flagged.
+    public var leftoverPeakGB: Double
     public var thresholds: [String]
     public var workdayDefinition: String
     public var recorderAvgCPUPercent: Double
@@ -246,6 +249,8 @@ public struct ReportModel: Sendable {
             ssdDays: written.count, ssdWriteGBPerDay: gbPerDay, ssdWriteTBPerYear: gbPerDay * 365 / 1000,
             events: try queries.eventCounts(machineId: machineId, from: from, to: to),
             thermalSlowdowns: try queries.thermalSlowdowns(machineId: machineId, from: from, to: to),
+            agentWarnings: try queries.agentWarningCount(machineId: machineId, from: from, to: to),
+            leftoverPeakGB: Double(try queries.leftoverPeakBytes(machineId: machineId, from: from, to: to) ?? 0) / 1e9,
             thresholds: [
                 "Memory ran out: memory pressure was at warning or critical, or memory was being swapped out to disk.",
                 "A workday counts as running out of memory after \(quantity(Double(limits.memoryLimitedDayMinSeconds) / 60, "minute")) of that.",

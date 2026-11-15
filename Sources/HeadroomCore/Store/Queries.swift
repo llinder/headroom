@@ -102,6 +102,21 @@ public struct Queries {
         }.compactMap { $0 }
     }
 
+    public func agentWarningCount(machineId: String, from: Date, to: Date) throws(DatabaseError) -> Int {
+        try rows("SELECT COUNT(*) FROM events WHERE machine_id=? AND kind='agent_warning' AND ts>=? AND ts<?") { s in
+            bindRange(s, machineId, from, to)
+        } read: { Int($0.int64(0)) }.first ?? 0
+    }
+
+    /// The running total after each leftover event, so its maximum is the peak. Unparseable payloads are skipped.
+    public func leftoverPeakBytes(machineId: String, from: Date, to: Date) throws(DatabaseError) -> UInt64? {
+        try rows(
+            "SELECT payload FROM events WHERE machine_id=? AND kind IN ('leftover','leftover_cleared') AND ts>=? AND ts<?"
+        ) { s in bindRange(s, machineId, from, to) } read: { s -> UInt64? in
+            try? JSONDecoder().decode([String: String].self, from: Data(s.string(0).utf8))["totalBytes"].flatMap { UInt64($0) }
+        }.compactMap { $0 }.max()
+    }
+
     /// Ownership facts for the leftover pass, covering intents, runs that are live or ended at or after `since`, and
     /// their active minutes from `since` on. `lastIntent` is a run's latest marker since then.
     ///
