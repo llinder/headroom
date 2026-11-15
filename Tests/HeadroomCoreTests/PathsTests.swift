@@ -34,4 +34,12 @@ import Testing
     try fm.createDirectory(at: loose, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
     try Paths(root: loose).ensureRoot()
     #expect(mode(loose) == 0o700)
+
+    // A symlinked root is the user's own choice of location: chmod would follow it and change the target.
+    let target = parent.appending(path: "target")
+    try fm.createDirectory(at: target, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+    let link = parent.appending(path: "link")
+    try fm.createSymbolicLink(at: link, withDestinationURL: target)
+    try Paths(root: link).ensureRoot()
+    #expect(mode(target) == 0o755)
 }

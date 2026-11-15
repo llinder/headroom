@@ -321,6 +321,14 @@ private func wallNow() -> Double { Date().timeIntervalSince1970 }
             previous: previous, facts: db.facts(now: now), keeps: KeepList(), now: now, deadline: wallNow() + 10)
         #expect(s.state.items.count == 1)
         #expect(s.state.items.first?.memoryBytes == nil, "a failed member leaves memory unread for a later pass")
+        #expect(s.state.statsFailedAt == [stack[1].id: now])
+        let missing = statsPath(stack[1].id)
+        let again = monitor([("default", flaky)]).pass(
+            previous: s.state, facts: db.facts(now: now), keeps: KeepList(), now: now + 300, deadline: wallNow() + 10)
+        #expect(flaky.requests.filter { $0 == missing }.count == 1, "a failed stats call is not retried within 30 minutes")
+        _ = monitor([("default", flaky)]).pass(
+            previous: again.state, facts: db.facts(now: now), keeps: KeepList(), now: now + 1800, deadline: wallNow() + 10)
+        #expect(flaky.requests.filter { $0 == missing }.count == 2)
     }
 
     @Test func failedInspectRetriesAfterThirtyMinutes() throws {

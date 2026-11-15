@@ -28,11 +28,14 @@ public struct Paths: Sendable {
     public var pretool: URL { root.appending(path: "pretool", directoryHint: .isDirectory) }
 
     /// The root holds container and project names (`leftovers.json`, `keeps.json`), so it is the user's alone; an
-    /// older install's looser directory is tightened.
+    /// older install's looser directory is tightened. A symlinked root is left as it is: chmod follows the link, and
+    /// the target is a location the user chose, whose mode isn't headroom's to change.
     public func ensureRoot() throws {
         let fm = FileManager.default
         try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let mode = (try fm.attributesOfItem(atPath: root.path)[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        let attributes = try fm.attributesOfItem(atPath: root.path)
+        guard attributes[.type] as? FileAttributeType == .typeDirectory else { return }
+        let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
         if mode & 0o077 != 0 { try fm.setAttributes([.posixPermissions: mode & 0o700], ofItemAtPath: root.path) }
     }
 }

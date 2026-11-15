@@ -89,6 +89,7 @@ public struct LeftoverMonitor: Sendable {
         // Keyed by container, not item: `compose down && up` or a Kind recreate keeps the item key with new containers.
         var starts = previous.starts
         var inspectFailedAt = previous.inspectFailedAt.filter { now - $0.value < Self.inspectRetry }
+        var statsFailedAt = previous.statsFailedAt.filter { now - $0.value < Self.inspectRetry }
         inspect: for item in candidates {
             guard let socket = sockets[item.engine] else { continue }
             for id in item.containerIDs where starts[id] == nil && inspectFailedAt[id] == nil {
@@ -145,7 +146,9 @@ public struct LeftoverMonitor: Sendable {
         // would understate the item for good. An item too big for the remaining budget waits for a later pass.
         stats: for i in flagged.indices where flagged[i].memoryBytes == nil {
             let ids = flagged[i].item.containerIDs
-            guard let socket = sockets[flagged[i].item.engine], !ids.isEmpty, ids.count <= budget else { continue }
+            guard let socket = sockets[flagged[i].item.engine], !ids.isEmpty, ids.count <= budget,
+                  !ids.contains(where: { statsFailedAt[$0] != nil })
+            else { continue }
             var total: UInt64 = 0
             var complete = true
             for id in ids {
@@ -154,6 +157,7 @@ public struct LeftoverMonitor: Sendable {
                 guard let data = try? client(socket).get("/containers/\(id)/stats?stream=false&one-shot=true"),
                       let bytes = ContainerDetail.memoryEstimate(statsJSON: data)
                 else {
+                    statsFailedAt[id] = now
                     complete = false
                     break
                 }
@@ -166,10 +170,12 @@ public struct LeftoverMonitor: Sendable {
         let presentIDs = Set(listed.flatMap(\.containerIDs) + items.flatMap(\.item.containerIDs))
         starts = starts.filter { presentIDs.contains($0.key) }
         inspectFailedAt = inspectFailedAt.filter { presentIDs.contains($0.key) }
+        statsFailedAt = statsFailedAt.filter { presentIDs.contains($0.key) }
 
         let state = LeftoverState(
             updated: now, engines: statuses, items: items, kept: kept, keepWarning: keepWarning,
-            seenReapers: seenReapers, starts: starts, inspectFailedAt: inspectFailedAt)
+            seenReapers: seenReapers, starts: starts, inspectFailedAt: inspectFailedAt,
+            statsFailedAt: statsFailedAt)
         return (state, events(previous: previous.items, current: items))
     }
 

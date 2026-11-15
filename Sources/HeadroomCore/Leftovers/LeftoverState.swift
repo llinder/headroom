@@ -58,11 +58,13 @@ public struct LeftoverState: Codable, Sendable, Equatable {
     public var starts: [String: Double]
     /// Container ID to the time its inspect last failed, so one bad container can't take the budget every pass.
     public var inspectFailedAt: [String: Double]
+    /// Container ID to the time its stats call last failed, with the same backoff as inspects.
+    public var statsFailedAt: [String: Double]
 
     public init(
         updated: Double = 0, engines: [EngineStatus] = [], items: [FlaggedItem] = [], kept: [KeptItem] = [],
         keepWarning: String? = nil, seenReapers: [String: Double] = [:], starts: [String: Double] = [:],
-        inspectFailedAt: [String: Double] = [:]
+        inspectFailedAt: [String: Double] = [:], statsFailedAt: [String: Double] = [:]
     ) {
         self.updated = updated
         self.engines = engines
@@ -72,6 +74,7 @@ public struct LeftoverState: Codable, Sendable, Equatable {
         self.seenReapers = seenReapers
         self.starts = starts
         self.inspectFailedAt = inspectFailedAt
+        self.statsFailedAt = statsFailedAt
     }
 
     public var totalBytes: UInt64 {
@@ -94,7 +97,10 @@ public struct LeftoverState: Codable, Sendable, Equatable {
         let data = try encoder.encode(self)
         let temp = url.deletingLastPathComponent().appending(path: ".\(url.lastPathComponent).\(UUID().uuidString)")
         guard FileManager.default.createFile(atPath: temp.path, contents: data, attributes: [.posixPermissions: 0o600])
-        else { throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: temp.path]) }
+        else {
+            try? FileManager.default.removeItem(at: temp)
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: temp.path])
+        }
         guard rename(temp.path, url.path) == 0 else {
             let code = errno
             try? FileManager.default.removeItem(at: temp)
