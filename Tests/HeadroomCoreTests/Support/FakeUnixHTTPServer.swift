@@ -12,7 +12,7 @@ final class FakeUnixHTTPServer: Sendable {
     private let finished = DispatchSemaphore(value: 0)
     private let stopped = Mutex(false)
 
-    init(response: [UInt8]?) throws {
+    init(response: [UInt8]?, dripInterval: Double? = nil) throws {
         // sun_path is 104 bytes on macOS, so the default temp dir is too long.
         let suffix = UUID().uuidString.prefix(8).lowercased()
         let dir = "/tmp/hr-\(suffix)"
@@ -49,7 +49,7 @@ final class FakeUnixHTTPServer: Sendable {
         let done = finished
         let stopFD = fds[0]
         let thread = Thread {
-            Self.serve(listenFD: fd, stopFD: stopFD, response: response)
+            Self.serve(listenFD: fd, stopFD: stopFD, response: response, dripInterval: dripInterval)
             done.signal()
         }
         thread.start()
@@ -70,7 +70,7 @@ final class FakeUnixHTTPServer: Sendable {
         try? FileManager.default.removeItem(atPath: directory)
     }
 
-    private static func serve(listenFD: Int32, stopFD: Int32, response: [UInt8]?) {
+    private static func serve(listenFD: Int32, stopFD: Int32, response: [UInt8]?, dripInterval: Double?) {
         while true {
             var fds = [pollfd(fd: listenFD, events: Int16(POLLIN), revents: 0),
                        pollfd(fd: stopFD, events: Int16(POLLIN), revents: 0)]
@@ -84,7 +84,15 @@ final class FakeUnixHTTPServer: Sendable {
             setsockopt(conn, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
             drainRequest(conn)
 
-            if let response {
+            if let response, let dripInterval {
+                for byte in response {
+                    var b = byte
+                    guard send(conn, &b, 1, 0) == 1 else { break }
+                    var wait = [pollfd(fd: stopFD, events: Int16(POLLIN), revents: 0)]
+                    if poll(&wait, 1, Int32(dripInterval * 1000)) > 0 { break }
+                }
+                close(conn)
+            } else if let response {
                 response.withUnsafeBytes { _ = send(conn, $0.baseAddress, $0.count, 0) }
                 close(conn)
             } else {

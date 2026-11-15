@@ -76,4 +76,51 @@ import Testing
             #expect(throws: DockerError.malformed) { try DockerClient(socketPath: s.socketPath).get("/x") }
         }
     }
+
+    @Test func hugeChunkSizeIsMalformedNotACrash() throws {
+        try serve("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7fffffffffffffff\r\nab") { s in
+            #expect(throws: DockerError.malformed) { try DockerClient(socketPath: s.socketPath).get("/x") }
+        }
+    }
+
+    @Test func serverAcceptingAndClosingIsAnErrorNotASignal() throws {
+        try serve("") { s in
+            #expect(throws: DockerError.malformed) { try DockerClient(socketPath: s.socketPath).get("/x") }
+        }
+    }
+
+    @Test func declaredContentLengthOverCapIsMalformed() throws {
+        try serve("HTTP/1.1 200 OK\r\nContent-Length: 99999999999\r\n\r\nabc") { s in
+            #expect(throws: DockerError.malformed) { try DockerClient(socketPath: s.socketPath).get("/x") }
+        }
+    }
+
+    @Test func responseOverCapIsMalformed() throws {
+        let big = "HTTP/1.1 200 OK\r\n\r\n" + String(repeating: "a", count: HTTPResponseParser.maxBody + 1)
+        try serve(big) { s in
+            #expect(throws: DockerError.malformed) { try DockerClient(socketPath: s.socketPath, timeout: 10).get("/x") }
+        }
+    }
+
+    @Test func slowDripRespectsDeadline() throws {
+        let server = try FakeUnixHTTPServer(response: Array(("HTTP/1.1 200 OK\r\n\r\n" + String(repeating: "a", count: 100)).utf8), dripInterval: 0.2)
+        defer { server.stop() }
+        let start = ContinuousClock.now
+        #expect(throws: DockerError.timeout) {
+            try DockerClient(socketPath: server.socketPath, timeout: 0.5).get("/x")
+        }
+        #expect(ContinuousClock.now - start < .seconds(1.5))
+    }
+
+    @Test func malformedStatusLine() throws {
+        try serve("NOTHTTP 200\r\n\r\n") { s in
+            #expect(throws: DockerError.malformed) { try DockerClient(socketPath: s.socketPath).get("/x") }
+        }
+    }
+
+    @Test func chunkSizeLineWithoutCRLFThenEOF() throws {
+        try serve("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5") { s in
+            #expect(throws: DockerError.malformed) { try DockerClient(socketPath: s.socketPath).get("/x") }
+        }
+    }
 }

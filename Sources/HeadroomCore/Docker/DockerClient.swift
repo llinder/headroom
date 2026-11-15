@@ -11,7 +11,7 @@ public struct DockerClient: Sendable {
 
     public init(socketPath: String, timeout: Double = 2) {
         self.socketPath = socketPath
-        self.timeout = timeout
+        self.timeout = timeout.isNaN ? 2 : min(60, max(0.01, timeout))
     }
 
     public func get(_ path: String) throws(DockerError) -> Data {
@@ -19,10 +19,6 @@ public struct DockerClient: Sendable {
         let fd = try connectSocket()
         defer { close(fd) }
 
-        var one: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
-
-        try setTimeouts(fd, remaining: timeout)
         let request = Array("GET \(path) HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n".utf8)
         try sendAll(fd, request, deadline: deadline)
 
@@ -43,6 +39,7 @@ public struct DockerClient: Sendable {
                 }
             }
             buffer.append(contentsOf: chunk[0..<n])
+            guard buffer.count <= HTTPResponseParser.maxBody else { throw .malformed }
             switch HTTPResponseParser.parse(buffer, eof: n == 0) {
             case .incomplete: continue
             case .complete(let status, let body):
@@ -67,6 +64,16 @@ public struct DockerClient: Sendable {
 
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw .refused }
+        // Options go on before connect: macOS rejects setsockopt with EINVAL once the peer has closed,
+        // which would leave SIGPIPE armed in the long-lived daemon.
+        var one: Int32 = 1
+        guard setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size)) == 0,
+              (try? setTimeouts(fd, remaining: timeout)) != nil
+        else {
+            close(fd)
+            throw .refused
+        }
+        // connect() on a Unix socket does not block on a full backlog on macOS; it fails fast with ECONNREFUSED.
         let rc = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
@@ -118,6 +125,8 @@ enum HTTPResponseParser {
         case failed(DockerError)
     }
 
+    static let maxBody = 16 * 1024 * 1024
+
     private static let crlf: [UInt8] = [13, 10]
     private static let headerEnd: [UInt8] = [13, 10, 13, 10]
 
@@ -142,7 +151,7 @@ enum HTTPResponseParser {
             let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
             switch name {
             case "content-length":
-                guard let n = Int(value), n >= 0 else { return .failed(.malformed) }
+                guard let n = Int(value), n >= 0, n <= maxBody else { return .failed(.malformed) }
                 contentLength = n
             case "transfer-encoding":
                 if value.lowercased().contains("chunked") { chunked = true }
@@ -169,7 +178,7 @@ enum HTTPResponseParser {
             guard let line = String(bytes: buf[pos..<lineEnd], encoding: .utf8) else { return .failed(.malformed) }
             let sizeText = (line.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
                 .trimmingCharacters(in: .whitespaces)
-            guard !sizeText.isEmpty, let size = Int(sizeText, radix: 16), size >= 0 else {
+            guard !sizeText.isEmpty, let size = Int(sizeText, radix: 16), size >= 0, size <= maxBody else {
                 return .failed(.malformed)
             }
             pos = lineEnd + 2
