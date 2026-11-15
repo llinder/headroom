@@ -120,8 +120,14 @@ final class MCPServer {
         var buffer = Data()
         var scanFrom = 0
         var discarding = false
-        while let chunk = try? input.read(upToCount: 65_536), !chunk.isEmpty {
-            buffer.append(chunk)
+        var chunk = [UInt8](repeating: 0, count: 65_536)
+        // read(2) returns whatever the pipe holds. FileHandle.read(upToCount:) waits for the full count or EOF, so a
+        // client that keeps stdin open would never see a reply.
+        while true {
+            let count = chunk.withUnsafeMutableBytes { read(input.fileDescriptor, $0.baseAddress, $0.count) }
+            if count < 0, errno == EINTR { continue }
+            guard count > 0 else { break }
+            buffer.append(contentsOf: chunk[..<count])
             var lineStart = 0
             while let newline = buffer[scanFrom...].firstIndex(of: 0x0A) {
                 if discarding {

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 
 @testable import HeadroomCLI
@@ -469,6 +470,59 @@ private final class MCPFixture {
         let replies = try serve(Data(paddedPing(id: 7, bytes: (1 << 20) + 10).utf8))
         #expect(replies.count == 1)
         #expect(replies.first?["error"]?["code"] == .int(-32700))
+    }
+
+    /// A live client keeps stdin open and waits for each reply. Earlier tests closed the pipe first, which hid a
+    /// read that waited for 64 KiB or EOF before handing anything back.
+    @Test func repliesWhileTheClientHoldsThePipeOpen() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "headroom-mcp-live-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = Paths(root: root)
+        let inPipe = Pipe()
+        let outPipe = Pipe()
+        let reader = outPipe.fileHandleForReading
+        let serverOut = outPipe.fileHandleForWriting
+        let serverIn = inPipe.fileHandleForReading
+        let lines = Mutex<[String]>([])
+        let finished = Mutex(false)
+
+        Thread {
+            MCPServer(paths: paths, now: { now }).serve(input: serverIn, output: serverOut)
+            finished.withLock { $0 = true }
+            try? serverOut.close()
+        }.start()
+        Thread {
+            var pending = Data()
+            while let chunk = try? reader.read(upToCount: 1), !chunk.isEmpty {
+                pending.append(chunk)
+                if chunk == Data([0x0A]) {
+                    let line = String(decoding: pending.dropLast(), as: UTF8.self)
+                    lines.withLock { $0.append(line) }
+                    pending = Data()
+                }
+            }
+        }.start()
+
+        func waitFor(_ condition: () -> Bool) -> Bool {
+            let deadline = Date().addingTimeInterval(2)
+            while Date() < deadline {
+                if condition() { return true }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            return condition()
+        }
+
+        let writer = inPipe.fileHandleForWriting
+        try writer.write(contentsOf: Data((#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"# + "\n").utf8))
+        #expect(waitFor { lines.withLock { $0.count } == 1 }, "initialize reply must arrive while stdin is open")
+        try writer.write(contentsOf: Data((#"{"jsonrpc":"2.0","id":2,"method":"ping"}"# + "\n").utf8))
+        #expect(waitFor { lines.withLock { $0.count } == 2 }, "ping reply must arrive while stdin is open")
+        #expect(!finished.withLock { $0 })
+
+        try writer.close()
+        #expect(waitFor { finished.withLock { $0 } }, "serve returns at EOF")
+        let ids = try lines.withLock { $0 }.map { try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))["id"] }
+        #expect(ids == [.int(1), .int(2)])
     }
 
     @Test func jsonValueRoundTripsIds() throws {
