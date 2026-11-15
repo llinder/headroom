@@ -50,8 +50,9 @@ public struct KeepList: Codable, Sendable, Equatable {
     }
 
     public func save(to url: URL) throws {
-        let data = try JSONEncoder().encode(self)
-        try data.write(to: url, options: .atomic)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try PrivateFile.write(try encoder.encode(self), to: url)
     }
 
     public func covers(_ item: LeftoverItem, now: Double) -> Bool {

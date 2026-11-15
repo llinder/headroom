@@ -94,7 +94,14 @@ public struct LeftoverState: Codable, Sendable, Equatable {
     public func save(to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(self)
+        try PrivateFile.write(try encoder.encode(self), to: url)
+    }
+}
+
+/// Sidecar files that name containers: written to a temp file at mode 0600, then renamed over the old one, so a
+/// reader never sees a partial file and no one else can read it.
+enum PrivateFile {
+    static func write(_ data: Data, to url: URL) throws {
         let temp = url.deletingLastPathComponent().appending(path: ".\(url.lastPathComponent).\(UUID().uuidString)")
         guard FileManager.default.createFile(atPath: temp.path, contents: data, attributes: [.posixPermissions: 0o600])
         else {

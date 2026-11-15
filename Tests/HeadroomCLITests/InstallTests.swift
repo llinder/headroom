@@ -167,6 +167,17 @@ private func commands(_ data: Data, event: String = "SessionStart") throws -> [S
                 == JSONSerialization.data(withJSONObject: after, options: opts))
     }
 
+    @Test func changedHookFileIsWrittenSortedAndACorrectOneIsLeftAsIs() throws {
+        let changed = String(decoding: try HookConfig.merged(
+            Data(existing.utf8), event: "SessionStart", matcher: nil, command: ours), as: UTF8.self)
+        let order = ["\"hooks\"", "\"permissions\"", "\"statusLine\""].compactMap { changed.range(of: $0)?.lowerBound }
+        #expect(order.count == 3 && order == order.sorted(), "keys are written sorted")
+
+        let unsorted = #"{"z":1,"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"\#(ours)","timeout":5}]}]},"a":2}"#
+        let again = try HookConfig.merged(Data(unsorted.utf8), event: "SessionStart", matcher: nil, command: ours)
+        #expect(again == Data(unsorted.utf8), "an already-correct file comes back byte for byte")
+    }
+
     @Test func nonObjectIsRejected() {
         #expect(throws: HookConfigError.self) { try HookConfig.merged(Data("[1]".utf8), event: "SessionStart", matcher: nil, command: ours) }
         #expect(throws: HookConfigError.self) { try HookConfig.merged(Data("nope".utf8), event: "SessionStart", matcher: nil, command: ours) }

@@ -177,7 +177,7 @@ The `DOCKER_HOST` engine (context `env`) has no Docker context, so its commands 
   - a duration such as `8h` or `7d` (flagged once older than that, measured from start).
 
   For compose stacks, any service's label counts, and the shortest lifetime wins.
-- **Keep list.** `headroom keep <name> [--for 7d]` and `headroom unkeep <name>` edit `Application Support/headroom/keeps.json`. A name can be a container name, `compose:<project>` or `kind:<cluster>`, optionally prefixed `<context>/`. Keep entries override labels. Kind clusters can only be kept this way, because Kind doesn't pass labels through to its node containers.
+- **Keep list.** `headroom keep <name> [--for 7d]` and `headroom unkeep <name>` edit `Application Support/headroom/keeps.json`, which is written by temp file plus rename at mode 0600 because it names containers. A name can be a container name, `compose:<project>` or `kind:<cluster>`, optionally prefixed `<context>/`. Keep entries override labels. Kind clusters can only be kept this way, because Kind doesn't pass labels through to its node containers.
 - **Built-in ignores.** These are never flagged and can be extended in `leftovers.ignore`, by name glob, image glob or label:
   - BuildKit builders (`buildx_buildkit*`, image `moby/buildkit*`);
   - registries (image `registry:*`, `kind-registry`);

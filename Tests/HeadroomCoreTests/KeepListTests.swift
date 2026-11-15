@@ -74,5 +74,8 @@ struct KeepListTests {
         try list.save(to: url)
         #expect(KeepList.load(from: url).0 == list)
         #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path) == ["keeps.json"])
+        let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+        #expect(mode?.intValue == 0o600, "the keep list names containers, so only the user may read it")
+        #expect(try String(contentsOf: url, encoding: .utf8) == #"{"entries":[{"name":"a","until":5}]}"#)
     }
 }
