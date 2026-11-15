@@ -122,8 +122,8 @@ public struct Queries {
             "SELECT ts, payload FROM events WHERE machine_id=? AND kind='container_intent' AND ts>=? AND ts<? ORDER BY ts"
         ) { s in
             s.bind(1, machineId)
-            s.bind(2, Int64(from))
-            s.bind(3, Int64(to))
+            s.bind(2, Self.epoch(from))
+            s.bind(3, Self.epoch(to))
         } read: { s -> (ts: Double, root: ProcessKey)? in
             guard let payload = try? JSONDecoder().decode([String: String].self, from: Data(s.string(1).utf8)),
                 let pid = payload["rootPid"].flatMap({ Int32($0) }),
@@ -172,7 +172,7 @@ public struct Queries {
             """
         ) { s in
             s.bind(1, machineId)
-            s.bind(2, Int64(since.rounded(.down)))
+            s.bind(2, Self.epoch(since.rounded(.down)))
         } read: { s in
             (
                 id: s.int64(0), key: ProcessKey(pid: Int32(clamping: s.int64(1)), start: UInt64(clamping: s.int64(2))),
@@ -184,7 +184,7 @@ public struct Queries {
         for intent in intents { lastIntent[intent.root] = max(lastIntent[intent.root] ?? intent.ts, intent.ts) }
 
         let usage = try db.prepare("SELECT ts FROM run_usage WHERE run_id=? AND ts>=? AND active_seconds>0 ORDER BY ts")
-        let firstMinute = Int64((since / 60).rounded(.down)) * 60
+        let firstMinute = Self.epoch((since / 60).rounded(.down) * 60)
         var runs: [ProcessKey: RunFacts] = [:]
         var seen = Set<Int64>()
         for row in runRows {
@@ -205,7 +205,7 @@ public struct Queries {
             "SELECT ts FROM samples WHERE machine_id=? AND ts<? ORDER BY ts DESC LIMIT ?"
         ) { s in
             s.bind(1, machineId)
-            s.bind(2, Int64(now.rounded(.up)))
+            s.bind(2, Self.epoch(now.rounded(.up)))
             s.bind(3, limit)
         } read: { $0.double(0) }.reversed()
         let saturated = samples.count == Int(limit)
@@ -400,7 +400,7 @@ public struct Queries {
             "SELECT \(level) FROM events WHERE machine_id=? AND kind='thermal' AND ts<? ORDER BY ts DESC, rowid DESC LIMIT 1"
         ) { s in
             s.bind(1, machineId)
-            s.bind(2, Int64(from.timeIntervalSince1970))
+            s.bind(2, Self.epoch(from.timeIntervalSince1970))
         } read: { $0.int64(0) }
         let levels = try rows(
             "SELECT \(level) FROM events WHERE machine_id=? AND kind='thermal' AND ts>=? AND ts<? ORDER BY ts, rowid"
@@ -458,8 +458,8 @@ public struct Queries {
             s.bind(1, machineId)
             s.bind(2, resolution)
             s.bind(3, metric.rawValue)
-            s.bind(4, Int64(from.rounded(.down)))
-            s.bind(5, Int64(to.rounded(.up)))
+            s.bind(4, Self.epoch(from.rounded(.down)))
+            s.bind(5, Self.epoch(to.rounded(.up)))
             s.bind(6, Int64(limit))
         } read: { MetricPoint(ts: $0.double(0), avg: $0.double(1), max: $0.double(2), p95: $0.double(3)) }
     }
@@ -474,8 +474,8 @@ public struct Queries {
             s.bind(1, machineId)
             s.bind(2, resolution)
             s.bind(3, metric.rawValue)
-            s.bind(4, Int64(from.rounded(.down)))
-            s.bind(5, Int64(to.rounded(.up)))
+            s.bind(4, Self.epoch(from.rounded(.down)))
+            s.bind(5, Self.epoch(to.rounded(.up)))
         } read: { $0.isNull(0) ? nil : $0.double(0) }.first ?? nil
     }
 
@@ -587,7 +587,7 @@ public struct Queries {
             """
         ) { s in
             s.bind(1, machineId)
-            s.bind(2, Int64(before.rounded(.up)))
+            s.bind(2, Self.epoch(before.rounded(.up)))
         } read: { Int($0.int64(0)) }.first ?? 0
         let bytes = try rows(
             """
@@ -596,7 +596,7 @@ public struct Queries {
             """
         ) { s in
             s.bind(1, machineId)
-            s.bind(2, Int64(before.rounded(.up)))
+            s.bind(2, Self.epoch(before.rounded(.up)))
         } read: { s -> UInt64? in
             try? JSONDecoder().decode([String: String].self, from: Data(s.string(0).utf8))["totalBytes"].flatMap { UInt64($0) }
         }.first ?? nil
@@ -619,6 +619,15 @@ public struct Queries {
         var p95: Double
     }
 
+    /// Bounds arrive from callers such as the MCP server's input, so any Double must bind: NaN becomes 0 and values
+    /// past Int64's range clamp, where `Int64(_:)` would trap.
+    static func epoch(_ x: Double) -> Int64 {
+        if x.isNaN { return 0 }
+        if x >= 9.2e18 { return .max }
+        if x <= -9.2e18 { return .min }
+        return Int64(x)
+    }
+
     private static func hourStart(_ ts: Int64) -> Int64 { ts - ts % hour }
 
     private func limitRows(_ machineId: String, resolution: Int64, from: Date, to: Date) throws(DatabaseError) -> [LimitRow] {
@@ -630,8 +639,8 @@ public struct Queries {
         ) { s in
             s.bind(1, machineId)
             s.bind(2, resolution)
-            s.bind(3, Int64(from.timeIntervalSince1970))
-            s.bind(4, Int64(to.timeIntervalSince1970))
+            s.bind(3, Self.epoch(from.timeIntervalSince1970))
+            s.bind(4, Self.epoch(to.timeIntervalSince1970))
         } read: { s in
             LimitKind(rawValue: s.string(1)).map { LimitRow(ts: s.int64(0), kind: $0, seconds: s.double(2)) }
         }.compactMap { $0 }
@@ -647,21 +656,21 @@ public struct Queries {
             s.bind(1, machineId)
             s.bind(2, resolution)
             s.bind(3, metric.rawValue)
-            s.bind(4, Int64(from.timeIntervalSince1970))
-            s.bind(5, Int64(to.timeIntervalSince1970))
+            s.bind(4, Self.epoch(from.timeIntervalSince1970))
+            s.bind(5, Self.epoch(to.timeIntervalSince1970))
         } read: { MetricRow(ts: $0.int64(0), avg: $0.double(1), max: $0.double(2), p95: $0.double(3)) }
     }
 
     private func bindRange(_ s: Statement, _ machineId: String, _ from: Date, _ to: Date) {
         s.bind(1, machineId)
-        s.bind(2, Int64(from.timeIntervalSince1970))
-        s.bind(3, Int64(to.timeIntervalSince1970))
+        s.bind(2, Self.epoch(from.timeIntervalSince1970))
+        s.bind(3, Self.epoch(to.timeIntervalSince1970))
     }
 
     private func bindSeconds(_ s: Statement, _ machineId: String, _ from: Double, _ to: Double) {
         s.bind(1, machineId)
-        s.bind(2, Int64(from.rounded(.down)))
-        s.bind(3, Int64(to.rounded(.up)))
+        s.bind(2, Self.epoch(from.rounded(.down)))
+        s.bind(3, Self.epoch(to.rounded(.up)))
     }
 
     private func rows<T>(_ sql: String, bind: (Statement) -> Void, read: (Statement) -> T) throws(DatabaseError) -> [T] {

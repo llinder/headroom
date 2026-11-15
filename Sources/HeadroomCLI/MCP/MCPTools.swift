@@ -1,30 +1,45 @@
 import Foundation
 import HeadroomCore
 
-/// A bad argument or unknown tool, answered as JSON-RPC -32602.
-struct MCPToolError: Error {
-    let message: String
+enum MCPToolError: Error, Equatable {
+    /// Answered as JSON-RPC -32602: the call names nothing this server has.
+    case unknownTool(String)
+    /// Answered as a tool result with `isError: true`, so the model sees the message and can fix its arguments.
+    case invalidArguments(String)
 }
 
 enum MCPTime {
+    /// 9999-12-31T23:59:59Z. Results outside [epoch, this] are rejected so no caller has to bound them.
+    static let latest = 253_402_300_799.0
+    private static let maxDigits = 12
+
     /// ISO 8601 with or without an offset (local time without one), a bare `YYYY-MM-DD` (local midnight), `now`,
     /// or `-Nm`, `-Nh`, `-Nd` before `now`.
     static func parse(_ s: String, now: Double, calendar: Calendar) -> Double? {
         let text = s.trimmingCharacters(in: .whitespaces)
-        if text == "now" { return now }
-        if text.hasPrefix("-") {
-            let digits = text.dropFirst().dropLast()
-            guard let unit = text.last, !digits.isEmpty, digits.allSatisfy(\.isASCII), digits.allSatisfy(\.isNumber),
-                let count = Double(digits)
-            else { return nil }
-            switch unit {
-            case "m": return now - count * 60
-            case "h": return now - count * 3600
-            case "d": return now - count * 86_400
-            default: return nil
-            }
+        let value: Double?
+        if text == "now" {
+            value = now
+        } else if text.hasPrefix("-") {
+            value = relative(text, now: now)
+        } else {
+            value = iso(text, calendar: calendar)
         }
-        return iso(text, calendar: calendar)
+        guard let value, value.isFinite, (0...latest).contains(value) else { return nil }
+        return value
+    }
+
+    private static func relative(_ text: String, now: Double) -> Double? {
+        let digits = text.dropFirst().dropLast()
+        guard let unit = text.last, (1...maxDigits).contains(digits.count), digits.allSatisfy(\.isASCII),
+            digits.allSatisfy(\.isNumber), let count = Double(digits)
+        else { return nil }
+        switch unit {
+        case "m": return now - count * 60
+        case "h": return now - count * 3600
+        case "d": return now - count * 86_400
+        default: return nil
+        }
     }
 
     private static func iso(_ text: String, calendar: Calendar) -> Double? {
@@ -94,6 +109,7 @@ enum MCPTime {
 
 enum MCPTools {
     private static let pointCap = 500
+    private static let leftoverCap = 50
     private static let autoMinuteRange = 6.0 * 3600
     private static let rawRetention = 30.0 * 86_400
     private static let minuteRetention = 90.0 * 86_400
@@ -101,7 +117,8 @@ enum MCPTools {
     private static let noData = "no data yet — run `headroom install`"
 
     private static let timeHelp =
-        "ISO 8601 (local time when there is no offset), YYYY-MM-DD, now, or relative such as -30m, -2h, -1d"
+        "ISO 8601 (local time when there is no offset), YYYY-MM-DD, now, or relative such as -30m, -2h, -1d; "
+        + "between 1970 and 9999"
 
     static let definitions: JSONValue = .array([
         tool(
@@ -166,16 +183,16 @@ enum MCPTools {
             let request = try metricRequest(arguments, now: now, calendar: calendar)
             return run(paths) { q, id throws(DatabaseError) in try queryMetric(q, id, request, clock: clock) }
         case "explain_slowdown":
-            guard let atText = arguments["at"]?.stringValue else { throw MCPToolError(message: "at is required") }
+            guard let atText = arguments["at"]?.stringValue else { throw .invalidArguments("at is required") }
             guard let at = MCPTime.parse(atText, now: now, calendar: calendar) else {
-                throw MCPToolError(message: "at must be \(timeHelp)")
+                throw .invalidArguments("at must be \(timeHelp)")
             }
             let minutes = try windowMinutes(arguments["windowMinutes"])
             return run(paths) { q, id throws(DatabaseError) in
                 try explainSlowdown(q, id, at: at, minutes: minutes, now: now, clock: clock)
             }
         default:
-            throw MCPToolError(message: "unknown tool \(name)")
+            throw .unknownTool("unknown tool \(name)")
         }
     }
 
@@ -192,24 +209,24 @@ enum MCPTools {
         _ arguments: [String: JSONValue], now: Double, calendar: Calendar
     ) throws(MCPToolError) -> MetricRequest {
         guard let metric = arguments["metric"]?.stringValue.flatMap(Metric.init(rawValue:)) else {
-            throw MCPToolError(message: "metric must be one of \(Metric.allCases.map(\.rawValue).joined(separator: ", "))")
+            throw .invalidArguments("metric must be one of \(Metric.allCases.map(\.rawValue).joined(separator: ", "))")
         }
         guard let fromText = arguments["from"]?.stringValue, let from = MCPTime.parse(fromText, now: now, calendar: calendar)
-        else { throw MCPToolError(message: "from must be \(timeHelp)") }
+        else { throw .invalidArguments("from must be \(timeHelp)") }
         var to = now
         if let toValue = arguments["to"] {
             guard let text = toValue.stringValue, let parsed = MCPTime.parse(text, now: now, calendar: calendar) else {
-                throw MCPToolError(message: "to must be \(timeHelp)")
+                throw .invalidArguments("to must be \(timeHelp)")
             }
             to = parsed
         }
-        guard from < to else { throw MCPToolError(message: "from must be before to") }
+        guard from < to else { throw .invalidArguments("from must be before to") }
         let resolution: Int64
         switch arguments["resolution"].map({ $0.stringValue ?? "" }) ?? "auto" {
         case "minute": resolution = Queries.minuteResolution
         case "hour": resolution = Queries.hourResolution
         case "auto": resolution = to - from <= autoMinuteRange ? Queries.minuteResolution : Queries.hourResolution
-        default: throw MCPToolError(message: "resolution must be minute, hour or auto")
+        default: throw .invalidArguments("resolution must be minute, hour or auto")
         }
         return MetricRequest(metric: metric, from: from, to: to, resolution: resolution)
     }
@@ -217,7 +234,7 @@ enum MCPTools {
     private static func windowMinutes(_ value: JSONValue?) throws(MCPToolError) -> Int {
         guard let value else { return 30 }
         guard let number = value.doubleValue, number == number.rounded(), (1...1440).contains(number) else {
-            throw MCPToolError(message: "windowMinutes must be a whole number from 1 to 1440")
+            throw .invalidArguments("windowMinutes must be a whole number from 1 to 1440")
         }
         return Int(number)
     }
@@ -390,7 +407,7 @@ enum MCPTools {
         let sidecar = LeftoverState.load(from: paths.leftovers)
         let leftovers = LeftoversNow(
             count: sidecar.items.count, totalBytes: sidecar.totalBytes,
-            items: sidecar.items.map { f in
+            items: sidecar.items.prefix(leftoverCap).map { f in
                 LeftoverOut(
                     name: f.item.name, kind: f.item.kind.rawValue, engine: f.item.engine, reason: f.reason,
                     memoryBytes: f.memoryBytes, runningSeconds: max(0, now - f.startedAt).rounded(), cleanup: f.item.cleanup)

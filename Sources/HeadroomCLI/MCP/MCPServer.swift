@@ -101,26 +101,53 @@ final class MCPServer {
         let error: RPCError?
     }
 
+    /// Longest line accepted. A longer one is answered with a single parse error and skipped up to its newline, so
+    /// a runaway client can't grow the buffer without bound.
+    static let maxLineBytes = 1 << 20
+
     func serve(input: FileHandle, output: FileHandle) {
-        var buffer = Data()
-        func respond(_ line: Data) -> Bool {
-            guard line.contains(where: { !Self.isSpace($0) }), let reply = handle(line: line) else { return true }
+        func write(_ reply: Data?) -> Bool {
+            guard let reply else { return true }
             return (try? output.write(contentsOf: reply + Data([0x0A]))) != nil
         }
+        func respond(_ line: Data) -> Bool {
+            if line.count > Self.maxLineBytes { return write(parseError) }
+            guard line.contains(where: { !Self.isSpace($0) }) else { return true }
+            return write(handle(line: line))
+        }
+
+        // `buffer` stays zero-based: it is only appended to, or rebuilt from its unconsumed tail once per chunk.
+        var buffer = Data()
+        var scanFrom = 0
+        var discarding = false
         while let chunk = try? input.read(upToCount: 65_536), !chunk.isEmpty {
             buffer.append(chunk)
-            while let newline = buffer.firstIndex(of: 0x0A) {
-                let line = Data(buffer[buffer.startIndex..<newline])
-                buffer.removeSubrange(buffer.startIndex...newline)
-                guard respond(line) else { return }
+            var lineStart = 0
+            while let newline = buffer[scanFrom...].firstIndex(of: 0x0A) {
+                if discarding {
+                    discarding = false
+                } else {
+                    guard respond(buffer[lineStart..<newline]) else { return }
+                }
+                lineStart = newline + 1
+                scanFrom = lineStart
             }
+            if !discarding, buffer.count - lineStart > Self.maxLineBytes {
+                guard write(parseError) else { return }
+                discarding = true
+            }
+            if discarding { lineStart = buffer.count }
+            buffer = Data(buffer[lineStart...])
+            scanFrom = buffer.count
         }
-        _ = respond(buffer)
+        if !discarding { _ = respond(buffer) }
     }
+
+    private var parseError: Data? { reply(id: .null, error: RPCError(code: -32700, message: "parse error")) }
 
     func handle(line: Data) -> Data? {
         guard let message = try? JSONDecoder().decode(JSONValue.self, from: line) else {
-            return reply(id: .null, error: RPCError(code: -32700, message: "parse error"))
+            return parseError
         }
         guard case let .object(fields) = message else {
             return reply(id: .null, error: RPCError(code: -32600, message: "invalid request"))
@@ -164,17 +191,21 @@ final class MCPServer {
             case let .object(value)?: arguments = value
             default: return reply(id: requestId, error: RPCError(code: -32602, message: "arguments must be an object"))
             }
+            let outcome: (text: String, isError: Bool)
             do {
-                let outcome = try MCPTools.call(name: name, arguments: arguments, paths: paths, now: now(), calendar: calendar)
-                return reply(
-                    id: requestId,
-                    result: .object([
-                        "content": .array([.object(["type": .string("text"), "text": .string(outcome.text)])]),
-                        "isError": .bool(outcome.isError),
-                    ]))
+                outcome = try MCPTools.call(name: name, arguments: arguments, paths: paths, now: now(), calendar: calendar)
             } catch {
-                return reply(id: requestId, error: RPCError(code: -32602, message: error.message))
+                switch error {
+                case let .unknownTool(message): return reply(id: requestId, error: RPCError(code: -32602, message: message))
+                case let .invalidArguments(message): outcome = (message, true)
+                }
             }
+            return reply(
+                id: requestId,
+                result: .object([
+                    "content": .array([.object(["type": .string("text"), "text": .string(outcome.text)])]),
+                    "isError": .bool(outcome.isError),
+                ]))
         default:
             return reply(id: requestId, error: RPCError(code: -32601, message: "method not found: \(method)"))
         }

@@ -314,4 +314,32 @@ private final class Fixture {
         #expect(limits["2026-11-01"]?[.heavySwap] == 25)
         #expect(limits["2026-11-02"]?[.heavySwap] == 1)
     }
+
+    /// Any Double a caller passes must bind, never trap: the MCP server hands these bounds straight from its input.
+    @Test func nonFiniteAndHugeBoundsDoNotTrap() throws {
+        let f = try Fixture()
+        try f.rollup(60, at(0, 1), .cpuBusy, avg: 0.5, max: 0.9, p95: 0.8)
+        let q = Queries(db: f.db)
+        for (from, to) in [(-Double.infinity, Double.infinity), (Double.nan, Double.nan), (-1e300, 1e300)] {
+            let all = try q.metricSeries(machineId: machine, metric: .cpuBusy, resolution: 60, from: from, to: to, limit: 10)
+            #expect(all.count == (from.isNaN ? 0 : 1))
+            _ = try q.metricPeak(machineId: machine, metric: .cpuBusy, resolution: 60, from: from, to: to)
+            _ = try q.limitSeconds(machineId: machine, resolution: 60, from: from, to: to)
+            _ = try q.maxPressure(machineId: machine, from: from, to: to)
+            _ = try q.topProcesses(machineId: machine, from: from, to: to)
+            _ = try q.agentRunActivity(machineId: machine, from: from, to: to, limit: 5)
+            _ = try q.events(machineId: machine, from: from, to: to, limit: 5)
+            _ = try q.leftoversBefore(machineId: machine, before: to)
+            _ = try q.containerIntents(machineId: machine, from: from, to: to)
+            _ = try q.groupTotals(
+                machineId: machine, from: Date(timeIntervalSince1970: from), to: Date(timeIntervalSince1970: to))
+            _ = try q.leftoverPeakBytes(
+                machineId: machine, from: Date(timeIntervalSince1970: from), to: Date(timeIntervalSince1970: to))
+            _ = try q.thermalSlowdowns(
+                machineId: machine, from: Date(timeIntervalSince1970: from), to: Date(timeIntervalSince1970: to))
+            _ = try q.limitSecondsByDay(
+                machineId: machine, from: Date(timeIntervalSince1970: from), to: Date(timeIntervalSince1970: to),
+                calendar: utc())
+        }
+    }
 }

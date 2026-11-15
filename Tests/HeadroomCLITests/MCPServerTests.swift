@@ -132,20 +132,93 @@ private final class MCPFixture {
             try f.send(#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"drop_tables","arguments":{}}}"#))
         #expect(reply["error"]?["code"] == .int(-32602))
 
-        let badMetric = try #require(
-            try f.send(
-                #"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"query_metric","arguments":{"metric":"nope","from":"-1h"}}}"#
-            ))
-        #expect(badMetric["error"]?["code"] == .int(-32602))
-
-        let badTime = try #require(
-            try f.send(
-                #"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"explain_slowdown","arguments":{"at":"yesterday-ish"}}}"#
-            ))
-        #expect(badTime["error"]?["code"] == .int(-32602))
-
         let noName = try #require(try f.send(#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{}}"#))
         #expect(noName["error"]?["code"] == .int(-32602))
+    }
+
+    /// A known tool given bad arguments answers with a tool error the model can read and correct, not a protocol error.
+    @Test func badArgumentsAreToolErrors() throws {
+        let f = try MCPFixture()
+        let cases: [(String, String)] = [
+            ("query_metric", #"{"metric":"nope","from":"-1h"}"#),
+            ("query_metric", #"{"from":"-1h"}"#),
+            ("query_metric", #"{"metric":"cpuBusy","from":"-1h","resolution":"week"}"#),
+            ("query_metric", #"{"metric":"cpuBusy","from":"now","to":"-1h"}"#),
+            ("query_metric", #"{"metric":7,"from":["-1h"]}"#),
+            ("explain_slowdown", #"{"at":"yesterday-ish"}"#),
+            ("explain_slowdown", #"{"at":"-1h","windowMinutes":"thirty"}"#),
+            ("explain_slowdown", #"{"at":"-1h","windowMinutes":1.5}"#),
+            ("explain_slowdown", #"{"at":"-1h","windowMinutes":0}"#),
+            ("explain_slowdown", #"{"at":"-1h","windowMinutes":null}"#),
+            ("explain_slowdown", #"{"at":{"t":1}}"#),
+        ]
+        for (tool, arguments) in cases {
+            let result = try f.call(tool, arguments)
+            #expect(result.isError, "\(tool) \(arguments)")
+            #expect(result.body == .null, "\(tool) \(arguments)")
+        }
+    }
+
+    /// Times far outside the calendar used to reach the Int64 binds and trap; each must come back as a tool error.
+    @Test func outOfRangeTimesAreToolErrorsNotTraps() throws {
+        let f = try MCPFixture()
+        let huge = [
+            "-99999999999999999999d", "-" + String(repeating: "9", count: 400) + "d", "0001-01-01T00:00:00Z",
+            "99999-01-01T00:00:00Z", "1969-12-31T23:59:59Z", "10000-01-01",
+        ]
+        for time in huge {
+            #expect(MCPTime.parse(time, now: now, calendar: .current) == nil, "\(time)")
+            let metric = try f.call("query_metric", #"{"metric":"cpuBusy","from":"\#(time)"}"#)
+            #expect(metric.isError, "\(time)")
+            let explain = try f.call("explain_slowdown", #"{"at":"\#(time)"}"#)
+            #expect(explain.isError, "\(time)")
+        }
+        #expect(MCPTime.parse("-999999999999m", now: now, calendar: .current) == nil)
+        #expect(MCPTime.parse("-9999999999999m", now: now, calendar: .current) == nil)
+        #expect(MCPTime.parse("9999-12-31T23:59:59Z", now: now, calendar: .current) == 253_402_300_799)
+        #expect(MCPTime.parse("1970-01-01T00:00:00Z", now: now, calendar: .current) == 0)
+    }
+
+    @Test func hostileEnvelopes() throws {
+        let f = try MCPFixture()
+        _ = try f.initialize()
+        let nullId = try #require(try f.send(#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#))
+        #expect(nullId["error"]?["code"] == .int(-32600))
+        #expect(nullId["id"] == .null)
+
+        let objectId = try #require(try f.send(#"{"jsonrpc":"2.0","id":{"a":1},"method":"ping"}"#))
+        #expect(objectId["error"]?["code"] == .int(-32600))
+
+        for params in [#""current_status""#, #"[1]"#, #"{"name":7}"#, #"{"name":"current_status","arguments":[1]}"#,
+            #"{"name":"current_status","arguments":"x"}"#]
+        {
+            let reply = try #require(try f.send(#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":\#(params)}"#))
+            #expect(reply["error"]?["code"] == .int(-32602), "\(params)")
+            #expect(reply["id"] == .int(11))
+        }
+
+        let oddInit = try #require(try f.send(#"{"jsonrpc":"2.0","id":12,"method":"initialize","params":"x"}"#))
+        #expect(oddInit["result"]?["protocolVersion"] == .string("2025-11-25"))
+
+        let noVersion = try #require(try f.send(#"{"id":13,"method":"ping"}"#))
+        #expect(noVersion["error"]?["code"] == .int(-32600))
+        #expect(noVersion["id"] == .int(13))
+    }
+
+    @Test func leftoverItemsAreCappedAtFifty() throws {
+        let f = try MCPFixture()
+        let items = (0..<60).map { i in
+            FlaggedItem(
+                item: LeftoverItem(
+                    key: "default/container/c\(i)", engine: "default", kind: .container, name: "c\(i)",
+                    containerIDs: ["id\(i)"], sessionId: nil, lifetime: nil, cleanup: ["docker stop c\(i)"]),
+                startedAt: now - 100, reason: "done", memoryBytes: 10, firstFlagged: now)
+        }
+        try LeftoverState(updated: now, items: items).save(to: f.paths.leftovers)
+        let result = try f.call("current_status")
+        #expect(result.body["leftovers"]?["count"] == .int(60))
+        #expect(result.body["leftovers"]?["totalBytes"] == .int(600))
+        #expect(result.body["leftovers"]?["items"]?.arrayValue?.count == 50)
     }
 
     @Test func missingDatabaseIsToolError() throws {
@@ -345,6 +418,57 @@ private final class MCPFixture {
         #expect(replies.last == "")
         let ids = try replies.dropLast().map { try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))["id"] }
         #expect(ids == [.int(1), .int(2)])
+    }
+
+    /// Feeds `input` through a real pipe from another thread, since a write larger than the pipe buffer would block.
+    private func serve(_ input: Data) throws -> [JSONValue] {
+        let f = try MCPFixture(seed: false)
+        let inPipe = Pipe()
+        let outPipe = Pipe()
+        let writer = inPipe.fileHandleForWriting
+        let done = DispatchSemaphore(value: 0)
+        Thread {
+            try? writer.write(contentsOf: input)
+            try? writer.close()
+            done.signal()
+        }.start()
+        f.server.serve(input: inPipe.fileHandleForReading, output: outPipe.fileHandleForWriting)
+        done.wait()
+        try outPipe.fileHandleForWriting.close()
+        let written = try outPipe.fileHandleForReading.readToEnd() ?? Data()
+        return try String(decoding: written, as: UTF8.self).split(separator: "\n").map {
+            try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))
+        }
+    }
+
+    /// A ping padded past the cap. It is valid JSON, so only the cap can turn it into a parse error.
+    private func paddedPing(id: Int, bytes: Int) -> String {
+        let prefix = #"{"jsonrpc":"2.0","id":\#(id),"method":"ping","params":{"pad":""#
+        let suffix = #""}}"#
+        return prefix + String(repeating: "a", count: bytes - prefix.utf8.count - suffix.utf8.count) + suffix
+    }
+
+    @Test func oversizedLineIsOneParseErrorThenServingContinues() throws {
+        let input = Data((paddedPing(id: 4, bytes: 2 << 20) + "\n" + #"{"jsonrpc":"2.0","id":5,"method":"ping"}"# + "\n").utf8)
+        let replies = try serve(input)
+        #expect(replies.count == 2)
+        #expect(replies.first?["error"]?["code"] == .int(-32700))
+        #expect(replies.first?["id"] == .null)
+        #expect(replies.last?["id"] == .int(5))
+        #expect(replies.last?["result"] == .object([:]))
+    }
+
+    @Test func lineJustUnderTheCapParses() throws {
+        let line = paddedPing(id: 6, bytes: (1 << 20) - 1)
+        #expect(line.utf8.count == (1 << 20) - 1)
+        let replies = try serve(Data((line + "\n" + line + "\n").utf8))
+        #expect(replies.map { $0["id"] } == [.int(6), .int(6)])
+    }
+
+    @Test func oversizedFinalLineWithoutNewlineIsOneParseError() throws {
+        let replies = try serve(Data(paddedPing(id: 7, bytes: (1 << 20) + 10).utf8))
+        #expect(replies.count == 1)
+        #expect(replies.first?["error"]?["code"] == .int(-32700))
     }
 
     @Test func jsonValueRoundTripsIds() throws {
