@@ -174,6 +174,24 @@ struct LeftoverItemsTests {
         }
     }
 
+    @Test func dockerHostEngineCleanupSetsDockerHost() {
+        let cs = [
+            c("a", "web", labels: ["com.docker.compose.project": "shop"]),
+            c("b", "solo", labels: [:]),
+            c("k", "dev-control-plane", labels: ["io.x-k8s.kind.cluster": "dev"]),
+        ]
+        let host = "unix:///tmp/it's docker.sock"
+        let items = LeftoverGrouper.group(cs, engine: "env", dockerHost: host, ignore: IgnoreRules()).items
+        let env = "DOCKER_HOST='unix:///tmp/it'\\''s docker.sock'"
+        #expect(items[0].cleanup == ["\(env) docker compose -p 'shop' down"])
+        #expect(items[1].cleanup == ["\(env) docker rm -f 'b'"])
+        #expect(items[2].cleanup == [
+            "\(env) docker stop 'dev-control-plane'",
+            "\(env) kind delete cluster --name 'dev'",
+        ])
+        #expect(!items.flatMap(\.cleanup).contains { $0.contains("--context") || $0.contains("DOCKER_CONTEXT") })
+    }
+
     @Test func configDecodesWithDefaults() throws {
         let cfg = try JSONDecoder().decode(HeadroomConfig.self, from: Data(#"{"leftovers":{"ignore":{"names":["x*"]}}}"#.utf8))
         #expect(cfg.leftovers.afterMinutes == 60)

@@ -303,6 +303,22 @@ private func wallNow() -> Double { Date().timeIntervalSince1970 }
         #expect(third.events.isEmpty, "an unchanged total emits nothing")
     }
 
+    @Test func dockerHostEngineItemsGetDockerHostCleanup() throws {
+        let now = wallNow()
+        let box = Box(id: hexID(1), name: "old", startedAt: now - 2 * day)
+        let server = try FakeUnixHTTPServer(routes: engineRoutes([box]))
+        defer { server.stop() }
+        let db = try TempDB()
+        let engine = DockerEngine(context: "env", socketPath: server.socketPath, dockerHost: "unix://\(server.socketPath)")
+        let m = LeftoverMonitor(
+            machineId: "m1", engines: { [engine] }, client: { DockerClient(socketPath: $0, timeout: 2) },
+            config: LeftoversConfig())
+        let r = m.pass(previous: LeftoverState(), facts: db.facts(now: now), keeps: KeepList(), now: now, deadline: wallNow() + 10)
+        #expect(r.state.items.first?.item.cleanup == [
+            "DOCKER_HOST=\(LeftoverGrouper.quote("unix://\(server.socketPath)")) docker rm -f '\(box.id)'",
+        ])
+    }
+
     @Test func memoryFromStatsEstimate() throws {
         let now = wallNow()
         let compose = ["com.docker.compose.project": "shop"]

@@ -105,8 +105,9 @@ public enum LeftoverGrouper {
 
     /// `ignored` lists running containers skipped by a built-in or configured ignore, so `--kept` can explain why
     /// they aren't flagged. Each is named by key alone: the image reference can carry a private registry host.
+    /// `dockerHost` is the `DockerEngine.dockerHost` of an engine with no context, used in its cleanup commands.
     public static func group(
-        _ containers: [DockerContainer], engine: String, ignore: IgnoreRules
+        _ containers: [DockerContainer], engine: String, dockerHost: String? = nil, ignore: IgnoreRules
     ) -> (items: [LeftoverItem], reapers: Set<String>, ignored: [KeptItem]) {
         var reapers = Set<String>()
         var ignored: [KeptItem] = []
@@ -149,7 +150,7 @@ public enum LeftoverGrouper {
                 key: key, engine: engine, kind: b.kind, name: b.name,
                 containerIDs: b.members.map(\.id), sessionId: b.session,
                 lifetime: lifetime(of: b.members),
-                cleanup: cleanup(kind: b.kind, name: b.name, engine: engine, members: b.members),
+                cleanup: cleanup(kind: b.kind, name: b.name, engine: engine, dockerHost: dockerHost, members: b.members),
                 containerNames: b.members.flatMap(\.names))
         }
         return (items, reapers, ignored)
@@ -177,20 +178,21 @@ public enum LeftoverGrouper {
     }
 
     private static func cleanup(
-        kind: LeftoverKind, name: String, engine: String, members: [DockerContainer]
+        kind: LeftoverKind, name: String, engine: String, dockerHost: String?, members: [DockerContainer]
     ) -> [String] {
-        let ctx = quote(engine)
+        let docker = dockerHost.map { "DOCKER_HOST=\(quote($0)) docker" } ?? "docker --context \(quote(engine))"
         switch kind {
         case .kind:
             let nodes = members.map { quote($0.names.first ?? $0.id) }.joined(separator: " ")
+            let kind = dockerHost.map { "DOCKER_HOST=\(quote($0)) kind" } ?? "DOCKER_CONTEXT=\(quote(engine)) kind"
             return [
-                "docker --context \(ctx) stop \(nodes)",
-                "DOCKER_CONTEXT=\(ctx) kind delete cluster --name \(quote(name))",
+                "\(docker) stop \(nodes)",
+                "\(kind) delete cluster --name \(quote(name))",
             ]
         case .compose:
-            return ["docker --context \(ctx) compose -p \(quote(name)) down"]
+            return ["\(docker) compose -p \(quote(name)) down"]
         case .testcontainers, .container:
-            return ["docker --context \(ctx) rm -f \(members.map { quote($0.id) }.joined(separator: " "))"]
+            return ["\(docker) rm -f \(members.map { quote($0.id) }.joined(separator: " "))"]
         }
     }
 }

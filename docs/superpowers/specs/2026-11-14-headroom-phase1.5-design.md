@@ -168,6 +168,8 @@ Paths are resolved through symlinks and deduplicated, keeping the first context 
 | Testcontainers session | labels `org.testcontainers=true` and `org.testcontainers.sessionId` | `docker --context <ctx> rm -f <ids>` |
 | Other container | each one | `docker --context <ctx> rm -f <id>` |
 
+The `DOCKER_HOST` engine (context `env`) has no Docker context, so its commands start with `DOCKER_HOST='unix://<socket>' docker …`, and the Kind delete with `DOCKER_HOST='unix://<socket>' kind …`, shell-quoted. `DOCKER_HOST` is read from the recorder's environment, which under launchd is not the user's shell.
+
 **Lifetime: labels and the keep list.**
 - **Label.** `io.github.llinder.headroom.lifetime` on any container in the item can be:
   - `keep` (never flagged);

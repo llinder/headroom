@@ -3,10 +3,14 @@ import Foundation
 public struct DockerEngine: Sendable, Equatable {
     public let context: String
     public let socketPath: String
+    /// Set for the engine found through `DOCKER_HOST`, which has no Docker context: cleanup commands set the
+    /// variable instead of naming a context.
+    public let dockerHost: String?
 
-    public init(context: String, socketPath: String) {
+    public init(context: String, socketPath: String, dockerHost: String? = nil) {
         self.context = context
         self.socketPath = socketPath
+        self.dockerHost = dockerHost
     }
 }
 
@@ -27,17 +31,19 @@ public enum DockerEngines {
         environment: [String: String],
         systemSocket: String = "/var/run/docker.sock"
     ) -> [DockerEngine] {
-        var candidates = contextCandidates(home: home)
-        candidates.append((context: "default", path: systemSocket))
+        var candidates = contextCandidates(home: home).map { (context: $0.context, path: $0.path, fromEnvironment: false) }
+        candidates.append((context: "default", path: systemSocket, fromEnvironment: false))
         if let host = environment["DOCKER_HOST"], host.hasPrefix(unixPrefix) {
-            candidates.append((context: "env", path: String(host.dropFirst(unixPrefix.count))))
+            candidates.append((context: "env", path: String(host.dropFirst(unixPrefix.count)), fromEnvironment: true))
         }
 
         var seen = Set<String>()
         var engines: [DockerEngine] = []
         for candidate in candidates {
             guard let resolved = realPath(candidate.path), seen.insert(resolved).inserted else { continue }
-            engines.append(DockerEngine(context: candidate.context, socketPath: resolved))
+            engines.append(DockerEngine(
+                context: candidate.context, socketPath: resolved,
+                dockerHost: candidate.fromEnvironment ? unixPrefix + resolved : nil))
         }
         return engines
     }

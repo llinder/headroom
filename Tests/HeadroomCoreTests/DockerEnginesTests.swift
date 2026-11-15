@@ -44,7 +44,7 @@ import Testing
 
         #expect(engines == [
             DockerEngine(context: "alpha", socketPath: try resolved(sockA)),
-            DockerEngine(context: "env", socketPath: try resolved(sockB)),
+            DockerEngine(context: "env", socketPath: try resolved(sockB), dockerHost: "unix://\(try resolved(sockB))"),
         ])
     }
 

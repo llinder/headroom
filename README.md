@@ -126,6 +126,12 @@ reachable through the contexts in `~/.docker/contexts`, `/var/run/docker.sock`
 and a `unix://` `DOCKER_HOST`. It groups running containers into items: a Kind
 cluster, a Compose project, a Testcontainers session, or a single container.
 
+`DOCKER_HOST` is read from the recorder's own environment. The recorder runs under
+launchd, so a variable exported in your shell profile doesn't reach it; set it with
+`launchctl setenv DOCKER_HOST unix:///path/to/docker.sock` and restart the recorder.
+That engine has no Docker context, so its cleanup commands set the variable instead:
+`DOCKER_HOST='unix:///path/to/docker.sock' docker rm -f …`.
+
 An item is flagged as a **leftover** when the agent session that started it is
 done, meaning it exited, or it has had no activity for 60 awake minutes
 (`leftovers.afterMinutes`), or when it was started by a test run whose

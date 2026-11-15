@@ -62,7 +62,8 @@ public struct LeftoverMonitor: Sendable {
             let failures = (before?.failures ?? 0) + 1
             switch list(engine) {
             case .success(let containers):
-                let grouped = LeftoverGrouper.group(containers, engine: engine.context, ignore: config.ignore)
+                let grouped = LeftoverGrouper.group(
+                    containers, engine: engine.context, dockerHost: engine.dockerHost, ignore: config.ignore)
                 listed += grouped.items
                 reapers.formUnion(grouped.reapers)
                 ignored += grouped.ignored
