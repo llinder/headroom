@@ -55,6 +55,7 @@ struct SamplingPipelineTests {
         #expect(tick.groups.values.reduce(0) { $0 + $1.procCount } > 1)
         #expect(tick.topByCPU.count == 5 && tick.topByMemory.count == 5)
         #expect(tick.selfCPU == 0 && tick.selfFootprint == 0)
+        #expect((tick.battery == nil) == (BatterySampler.read() == nil))
     }
 
     @Test func discardSetsTheBaseline() {

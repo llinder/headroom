@@ -259,7 +259,7 @@ server (or run `claude mcp remove headroom` / `codex mcp remove headroom`).
 current, without opening the database:
 
 ```
-mem 83% ⚠ swap 8G · cpu 46% · disk 425G · 2 agents · ⚑ 2 leftovers · 3.4 GB
+mem 83% ⚠ swap 8G · cpu 46% · disk 425G · bat 68% ⚡ · 2 agents · ⚑ 2 leftovers · 3.4 GB
 ```
 
 Memory turns amber at pressure warn and red at critical (`--no-color` turns
@@ -267,12 +267,18 @@ colour off). If the recorder isn't running (the file is older than 60 s) it
 prints `headroom: off`, or nothing with `--quiet`. It never reads stdin and
 always exits 0.
 
+The battery segment (`{battery}`) shows the charge, with `⚡` while charging below 100%.
+On battery power it turns amber at 20% and red at 10%; on AC or while charging
+it stays plain. A Mac without a battery has no battery segment, and neither
+does a recorder older than the status line until `headroom install` updates
+both.
+
 The `⚑` segment only appears while there are abandoned containers
 (`{leftovers}`: count and memory held; the memory is left out until it has
 been read). Options:
-`--format "{mem} {swap} · {cpu} · {disk} · {agents} · {leftovers}"` (this is the
-default; segments are separated by ` · ` and an empty one is dropped),
-`--no-color`, `--quiet`.
+`--format "{mem} {swap} · {cpu} · {disk} · {battery} · {agents} · {leftovers}"`
+(this is the default; segments are separated by ` · ` and an empty one is
+dropped), `--no-color`, `--quiet`.
 
 `headroom install --agents` prints these snippets, which you add yourself:
 

@@ -2,7 +2,7 @@ import Foundation
 import HeadroomCore
 
 public enum StatusLineFormatter {
-    public static let defaultTemplate = "{mem} {swap} · {cpu} · {disk} · {agents} · {leftovers}"
+    public static let defaultTemplate = "{mem} {swap} · {cpu} · {disk} · {battery} · {agents} · {leftovers}"
     static let staleAfter = 60.0
 
     // Integer math and interpolation only: this runs on every status-line refresh, so
@@ -22,6 +22,18 @@ public enum StatusLineFormatter {
         let disk = "disk \(roundedInt(Double(usedDisk) / 1e9, upTo: 1e9))G"
         let agents = s.activeAgents == 1 ? "1 agent" : "\(s.activeAgents) agents"
 
+        // Empty without a battery, so a desktop Mac (or an older recorder's file) drops the segment.
+        var battery = ""
+        if let b = s.battery {
+            let level = min(Int(b.percent), 100)
+            battery = "bat \(level)%"
+            if b.charging && level < 100 { battery += " ⚡" }
+            // Low only matters when it's draining; on AC a low level is on its way up or held there.
+            if color && !b.onAC && !b.charging && level <= 20 {
+                battery = "\(level <= 10 ? "\u{1B}[31m" : "\u{1B}[33m")\(battery)\u{1B}[0m"
+            }
+        }
+
         var leftovers = ""
         if s.leftoverCount > 0 {
             let tenths = roundedInt(Double(s.leftoverBytes) / 1e8, upTo: 1e12)
@@ -39,6 +51,7 @@ public enum StatusLineFormatter {
                     .replacingOccurrences(of: "{swap}", with: swap)
                     .replacingOccurrences(of: "{cpu}", with: cpu)
                     .replacingOccurrences(of: "{disk}", with: disk)
+                    .replacingOccurrences(of: "{battery}", with: battery)
                     .replacingOccurrences(of: "{agents}", with: agents)
                     .replacingOccurrences(of: "{leftovers}", with: leftovers)
                     .split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")

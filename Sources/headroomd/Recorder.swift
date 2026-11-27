@@ -367,7 +367,8 @@ final class Recorder {
             limitFlags: tick.flags.rawValue,
             activeAgents: UInt16(clamping: tick.agents.activeCount), idleAgents: UInt16(clamping: tick.agents.idleCount),
             leftoverCount: UInt16(clamping: leftovers.items.count), leftoverBytes: leftovers.totalBytes,
-            swapGrowthBytesPerMin: swapGrowth.record(swapUsed: tick.memory.swapUsed, at: tick.ts))
+            swapGrowthBytesPerMin: swapGrowth.record(swapUsed: tick.memory.swapUsed, at: tick.ts),
+            battery: tick.battery)
         guard !liveState.write(snapshot), tick.ts - lastLiveWarning >= Double(Self.hour) else { return }
         lastLiveWarning = tick.ts
         log.error("live state write failed")
