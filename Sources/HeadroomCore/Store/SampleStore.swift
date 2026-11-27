@@ -27,13 +27,15 @@ public struct Tick: Sendable {
     public var agents: AgentUpdate
     public var selfCPU: Double
     public var selfFootprint: UInt64
+    /// Only the live state carries it; the store doesn't record it.
+    public var battery: BatteryReading?
 
     public init(
         ts: Double, cpu: CPUReading, memory: MemoryReading, disk: DiskReading, thermal: ThermalLevel,
         flags: LimitFlags, groups: [WorkloadGroup: GroupTotals],
         topByCPU: [(name: String, group: WorkloadGroup, value: Double)],
         topByMemory: [(name: String, group: WorkloadGroup, value: Double)],
-        agents: AgentUpdate, selfCPU: Double, selfFootprint: UInt64
+        agents: AgentUpdate, selfCPU: Double, selfFootprint: UInt64, battery: BatteryReading? = nil
     ) {
         self.ts = ts
         self.cpu = cpu
@@ -47,6 +49,7 @@ public struct Tick: Sendable {
         self.agents = agents
         self.selfCPU = selfCPU
         self.selfFootprint = selfFootprint
+        self.battery = battery
     }
 }
 

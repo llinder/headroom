@@ -57,7 +57,8 @@ public struct SamplingPipeline {
             flags: LimitEvaluator.evaluate(
                 cpu: cpuReading, memory: memoryReading, thermal: thermal, logicalCores: logicalCores, config: limits),
             groups: TickAggregation.groupTotals(processes: procs, groups: groups, busySeconds: cpuReading.busySeconds),
-            topByCPU: top.byCPU, topByMemory: top.byMemory, agents: agentUpdate, selfCPU: 0, selfFootprint: 0)
+            topByCPU: top.byCPU, topByMemory: top.byMemory, agents: agentUpdate, selfCPU: 0, selfFootprint: 0,
+            battery: BatterySampler.read())
         return (tick, agentUpdate)
     }
 
