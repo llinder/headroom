@@ -267,7 +267,7 @@ colour off). If the recorder isn't running (the file is older than 60 s) it
 prints `headroom: off`, or nothing with `--quiet`. It never reads stdin and
 always exits 0.
 
-The battery segment (`{battery}`) shows the charge, with `⚡` while charging.
+The battery segment (`{battery}`) shows the charge, with `⚡` while charging below 100%.
 On battery power it turns amber at 20% and red at 10%; on AC or while charging
 it stays plain. A Mac without a battery has no battery segment, and neither
 does a recorder older than the status line until `headroom install` updates
