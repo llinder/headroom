@@ -9,12 +9,17 @@ private let now = 1_800_000_000.0
 
 private func snapshot(
     timestamp: Double = now, mem: Double = 0.82, swap: UInt64 = 14 * (1 << 30), cpu: Float = 0.71,
-    pressure: UInt8 = 2, agents: UInt16 = 3, leftovers: UInt16 = 0, leftoverBytes: UInt64 = 0
+    pressure: UInt8 = 2, agents: UInt16 = 3, leftovers: UInt16 = 0, leftoverBytes: UInt64 = 0,
+    battery: BatteryReading? = nil
 ) -> LiveSnapshot {
     LiveSnapshot(
         timestamp: timestamp, cpuBusy: cpu, memUsed: UInt64(mem * 1000), memTotal: 1000, swapUsed: swap,
         diskFree: 583_000_000_000, diskCapacity: 1_000_000_000_000, pressure: pressure, thermal: 0, limitFlags: 0,
-        activeAgents: agents, idleAgents: 0, leftoverCount: leftovers, leftoverBytes: leftoverBytes)
+        activeAgents: agents, idleAgents: 0, leftoverCount: leftovers, leftoverBytes: leftoverBytes, battery: battery)
+}
+
+private func bat(_ percent: UInt8, charging: Bool = false, onAC: Bool = false) -> BatteryReading {
+    BatteryReading(percent: percent, charging: charging, onAC: onAC)
 }
 
 private func render(_ s: LiveSnapshot?, color: Bool = false, quiet: Bool = false, template: String = StatusLineFormatter.defaultTemplate) -> String {
@@ -94,6 +99,67 @@ private func render(_ s: LiveSnapshot?, color: Bool = false, quiet: Bool = false
     }
 }
 
+@Suite struct StatusLineBatteryTests {
+    private let amber = "\u{1B}[33m"
+    private let red = "\u{1B}[31m"
+    private let reset = "\u{1B}[0m"
+
+    @Test func percentOnBattery() {
+        #expect(render(snapshot(battery: bat(68)), template: "{battery}") == "bat 68%")
+        #expect(render(snapshot(battery: bat(0)), template: "{battery}") == "bat 0%", "a flat battery still shows")
+    }
+
+    @Test func chargingShowsBolt() {
+        #expect(render(snapshot(battery: bat(68, charging: true, onAC: true)), template: "{battery}") == "bat 68% ⚡")
+    }
+
+    @Test func fullOnACIsPlain() {
+        #expect(render(snapshot(battery: bat(100, onAC: true)), template: "{battery}") == "bat 100%")
+        // Some reports keep the charging flag at 100%; there is nothing left to charge.
+        #expect(render(snapshot(battery: bat(100, charging: true, onAC: true)), template: "{battery}") == "bat 100%")
+        #expect(render(snapshot(battery: bat(80, onAC: true)), template: "{battery}") == "bat 80%", "charge held at a limit")
+    }
+
+    @Test func lowAndCriticalColourOnBattery() {
+        #expect(render(snapshot(battery: bat(21)), color: true, template: "{battery}") == "bat 21%")
+        #expect(render(snapshot(battery: bat(20)), color: true, template: "{battery}") == "\(amber)bat 20%\(reset)")
+        #expect(render(snapshot(battery: bat(11)), color: true, template: "{battery}") == "\(amber)bat 11%\(reset)")
+        #expect(render(snapshot(battery: bat(10)), color: true, template: "{battery}") == "\(red)bat 10%\(reset)")
+        #expect(render(snapshot(battery: bat(0)), color: true, template: "{battery}") == "\(red)bat 0%\(reset)")
+    }
+
+    @Test func lowIsUncolouredWhenChargingOrOnAC() {
+        #expect(render(snapshot(battery: bat(8, charging: true, onAC: true)), color: true, template: "{battery}") == "bat 8% ⚡")
+        #expect(render(snapshot(battery: bat(8, onAC: true)), color: true, template: "{battery}") == "bat 8%")
+        #expect(render(snapshot(battery: bat(8, charging: true)), color: true, template: "{battery}") == "bat 8% ⚡")
+    }
+
+    @Test func lowIsUncolouredWithNoColor() {
+        #expect(render(snapshot(battery: bat(5)), color: false, template: "{battery}") == "bat 5%")
+    }
+
+    @Test func noBatteryDropsTheSegment() {
+        #expect(render(snapshot(), template: "{battery}") == "")
+        #expect(render(snapshot(), template: "{cpu} · {battery} · {agents}") == "cpu 71% · 3 agents")
+        #expect(render(snapshot()) == "mem 82% ⚠ swap 14G · cpu 71% · disk 417G · 3 agents")
+    }
+
+    @Test func defaultTemplatePlacesBatteryAfterDisk() {
+        #expect(render(snapshot(battery: bat(68, charging: true, onAC: true)))
+            == "mem 82% ⚠ swap 14G · cpu 71% · disk 417G · bat 68% ⚡ · 3 agents")
+    }
+
+    @Test func staleSnapshotIsOffEvenWithBattery() {
+        let old = snapshot(timestamp: now - 61, battery: bat(5))
+        #expect(render(old, color: true) == "headroom: off")
+        #expect(render(old, quiet: true) == "")
+    }
+
+    @Test func garbagePercentClamps() {
+        #expect(render(snapshot(battery: bat(255)), template: "{battery}") == "bat 100%")
+    }
+}
+
 private let binary: URL? = {
     let root = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     // Release only: an unoptimised binary's startup sits right at the budget and would make this flaky.
@@ -108,7 +174,7 @@ private let binary: URL? = {
         let dir = FileManager.default.temporaryDirectory.appending(path: "headroom-sl-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
         var writer = try LiveStateWriter(url: Paths(root: dir).liveState)
-        writer.write(snapshot(timestamp: Date().timeIntervalSince1970))
+        writer.write(snapshot(timestamp: Date().timeIntervalSince1970, battery: bat(15)))
 
         var times: [Double] = []
         for _ in 0..<200 {
